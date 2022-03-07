@@ -74,6 +74,8 @@ pub struct Config {
     double_quote: bool,
     escape: Option<u8>,
     quoting: bool,
+    streaming: bool, // if the command is streaming, false if entire CSV is loaded into memory
+    oom_warning: bool,
 }
 
 // Empty trait as an alias for Seek and Read that avoids auto trait errors
@@ -114,6 +116,8 @@ impl Config {
             double_quote: true,
             escape: None,
             quoting: true,
+            streaming: true,
+            oom_warning: false,
         }
     }
 
@@ -182,6 +186,17 @@ impl Config {
 
     pub fn quoting(mut self, yes: bool) -> Config {
         self.quoting = yes;
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn streaming(mut self, yes: bool) -> Config {
+        self.streaming = yes;
+        if self.streaming {
+            if let Some(ref path) = self.path {
+                self.oom_warning = !util::enough_memory(path.metadata().unwrap().len());
+            }
+        }
         self
     }
 

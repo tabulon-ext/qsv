@@ -24,6 +24,19 @@ pub fn num_cpus() -> usize {
 
 const MAX_JOBS_CPU_DIVISOR: usize = 3;
 
+pub fn enough_memory(file_size: u64) -> bool {
+    use sysinfo::{System, SystemExt};
+
+    let mut sys = System::new_all();
+    sys.refresh_memory();
+
+    let avail_mem = sys.available_memory();
+
+    // if file_size <= 90 percent of available memory
+    // then yes, we should have enough memory to run this command
+    file_size as f64 <= avail_mem as f64 * 0.90
+}
+
 pub fn max_jobs() -> usize {
     let cpus = num_cpus();
     let max_jobs_env = match env::var("QSV_MAX_JOBS") {
