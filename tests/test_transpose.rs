@@ -1,6 +1,4 @@
-use crate::workdir::Workdir;
-
-use crate::{qcheck, CsvData};
+use crate::{qcheck, workdir::Workdir, CsvData};
 
 fn prop_transpose(name: &str, rows: CsvData, streaming: bool) -> bool {
     let wrk = Workdir::new(name);
@@ -22,7 +20,7 @@ fn prop_transpose(name: &str, rows: CsvData, streaming: bool) -> bool {
     for i in 0..ncols {
         let mut expected_row = vec![];
         for j in 0..nrows {
-            expected_row.push(rows[j][i].to_owned());
+            expected_row.push(rows[j][i].clone());
         }
         expected.push(expected_row);
     }

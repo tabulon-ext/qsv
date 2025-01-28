@@ -1,6 +1,8 @@
 name: Rust Beta
 
 on:
+  schedule:
+    - cron: "0 */24 * * *"
   workflow_dispatch:
 
 env:
@@ -9,16 +11,22 @@ env:
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-python@v3.1.2
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5.4.0
       with:
-        python-version: '3.8'
+        python-version: '3.12'
+    - name: apt-get update Ubuntu, libwayland-dev
+      run: |
+        sudo apt-get update
+        sudo apt-get install libwayland-dev
     - name: Update Rust Beta
       run: |
         rustup update beta
         rustup default beta
     - name: Run tests
-      run: cargo test --verbose --features full,apply,fetch,generate,foreach,python,lua
+      env:
+        RUSTFLAGS: -C target-feature=+fxsr,+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+avx,+fma
+      run: cargo test --verbose --features feature_capable,apply,fetch,geocode,foreach,python,luau,polars,lens

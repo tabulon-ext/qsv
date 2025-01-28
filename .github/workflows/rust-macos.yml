@@ -5,6 +5,11 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-macos-tests-${{ github.ref }}-1
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,18 +17,28 @@ env:
 jobs:
   build:
 
-    runs-on: macos-latest
+    runs-on: self-hosted
+    # runs-on: macos-latest
 
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-python@v3.1.2
+    - uses: actions/checkout@v4
+    # - uses: actions/setup-python@v5.0.0
+    #   with:
+    #     python-version: '3.12'
+    - name: Installing Rust toolchain
+      uses: actions-rs/toolchain@v1
       with:
-        python-version: '3.8'
-    - name: Update Rust
-      run: rustup update
-    - name: Setup Rust-cache
-      uses: Swatinem/rust-cache@v1
-      with:
-        key: qsv-cache
+        toolchain: stable
+        profile: minimal
+        target: x86_64-apple-darwin
+        override: true
+    # - name: Setup Rust-cache
+    #   uses: Swatinem/rust-cache@v2
+    #   with:
+    #     key: qsv-macoslatestcache
+    #     # To only cache runs from `master`:
+    #     save-if: ${{ github.ref == 'refs/heads/master' }}
     - name: Run tests
-      run: cargo test --verbose --locked --features=apply,fetch,foreach,generate,lua,python,full
+      env:
+        RUSTFLAGS: -C target-cpu=native
+      run: cargo test --verbose --locked --features=apply,fetch,foreach,geocode,luau,python,polars,to,feature_capable,lens

@@ -5,6 +5,11 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-linux-tests-${{ github.ref }}-1
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,24 +20,42 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-python@v3.1.2
+    # - name: Maximize build space
+    #   uses: easimon/maximize-build-space@master
+    #   with:
+    #     swap-size-mb: 1024
+    #     remove-dotnet: 'true'
+    #     remove-android: 'true'
+    #     remove-haskell: 'true'
+    #     remove-docker-images: 'true'
+    - name: apt-get update Ubuntu, libwayland-dev
+      run: |
+        sudo apt-get update
+        sudo apt-get install libwayland-dev
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5.4.0
       with:
-        python-version: '3.8'
+        python-version: '3.12'
     - name: Install and Run Redis
       run: |
         sudo apt-get install redis-server
         sudo service redis-server start
     - name: Update Rust
       run: rustup update
-    - name: Setup Rust-cache
-      uses: Swatinem/rust-cache@v1
-      with:
-        key: qsv-cache
-    - name: Check formatting
-      uses: actions-rs/cargo@v1
-      with:
-        command: fmt
-        args: -- --check  
+    # - name: Setup Rust-cache
+    #   uses: Swatinem/rust-cache@v2
+    #   with:
+    #     key: qsv-cache
+    # - uses: actions/cache@v4
+    #   with:
+    #     path: |
+    #       ~/.cargo/bin/
+    #       ~/.cargo/registry/index/
+    #       ~/.cargo/registry/cache/
+    #       ~/.cargo/git/db/
+    #       target/
+    #     key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
     - name: Run tests
-      run: cargo test --verbose --locked --features=apply,fetch,foreach,generate,lua,python,full
+      env:
+        RUSTFLAGS: -C target-feature=+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+avx,+avx2,+fma,+bmi1,+bmi2,+lzcnt,+pclmulqdq
+      run: cargo test --verbose --locked --features=apply,fetch,foreach,geocode,luau,python,feature_capable,lens

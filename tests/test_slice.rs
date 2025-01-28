@@ -1,5 +1,4 @@
-use std::borrow::ToOwned;
-use std::process;
+use std::{borrow::ToOwned, process};
 
 use crate::workdir::Workdir;
 
@@ -11,49 +10,91 @@ macro_rules! slice_tests {
             #[test]
             fn headers_no_index() {
                 let name = concat!(stringify!($name), "headers_no_index");
-                test_slice(name, $start, $end, $expected, true, false, false);
+                test_slice(name, $start, $end, $expected, true, false, false, false);
             }
 
             #[test]
             fn no_headers_no_index() {
                 let name = concat!(stringify!($name), "no_headers_no_index");
-                test_slice(name, $start, $end, $expected, false, false, false);
+                test_slice(name, $start, $end, $expected, false, false, false, false);
+            }
+
+            #[test]
+            fn no_headers_no_index_json() {
+                let name = concat!(stringify!($name), "no_headers_no_index_json");
+                test_slice(name, $start, $end, $expected, false, false, false, true);
             }
 
             #[test]
             fn headers_index() {
                 let name = concat!(stringify!($name), "headers_index");
-                test_slice(name, $start, $end, $expected, true, true, false);
+                test_slice(name, $start, $end, $expected, true, true, false, false);
             }
 
             #[test]
             fn no_headers_index() {
                 let name = concat!(stringify!($name), "no_headers_index");
-                test_slice(name, $start, $end, $expected, false, true, false);
+                test_slice(name, $start, $end, $expected, false, true, false, false);
+            }
+
+            #[test]
+            fn headers_index_json() {
+                let name = concat!(stringify!($name), "headers_index_json");
+                test_slice(name, $start, $end, $expected, true, true, false, true);
+            }
+
+            #[test]
+            fn no_headers_index_json() {
+                let name = concat!(stringify!($name), "no_headers_index_json");
+                test_slice(name, $start, $end, $expected, false, true, false, true);
             }
 
             #[test]
             fn headers_no_index_len() {
                 let name = concat!(stringify!($name), "headers_no_index_len");
-                test_slice(name, $start, $end, $expected, true, false, true);
+                test_slice(name, $start, $end, $expected, true, false, true, false);
             }
 
             #[test]
             fn no_headers_no_index_len() {
                 let name = concat!(stringify!($name), "no_headers_no_index_len");
-                test_slice(name, $start, $end, $expected, false, false, true);
+                test_slice(name, $start, $end, $expected, false, false, true, false);
+            }
+
+            #[test]
+            fn headers_no_index_len_json() {
+                let name = concat!(stringify!($name), "headers_no_index_len_json");
+                test_slice(name, $start, $end, $expected, true, false, true, true);
+            }
+
+            #[test]
+            fn no_headers_no_index_len_json() {
+                let name = concat!(stringify!($name), "no_headers_no_index_len_json");
+                test_slice(name, $start, $end, $expected, false, false, true, true);
             }
 
             #[test]
             fn headers_index_len() {
                 let name = concat!(stringify!($name), "headers_index_len");
-                test_slice(name, $start, $end, $expected, true, true, true);
+                test_slice(name, $start, $end, $expected, true, true, true, false);
             }
 
             #[test]
             fn no_headers_index_len() {
                 let name = concat!(stringify!($name), "no_headers_index_len");
-                test_slice(name, $start, $end, $expected, false, true, true);
+                test_slice(name, $start, $end, $expected, false, true, true, false);
+            }
+
+            #[test]
+            fn headers_index_len_json() {
+                let name = concat!(stringify!($name), "headers_index_len_json");
+                test_slice(name, $start, $end, $expected, true, true, true, true);
+            }
+
+            #[test]
+            fn no_headers_index_len_json() {
+                let name = concat!(stringify!($name), "no_headers_index_len_json");
+                test_slice(name, $start, $end, $expected, false, true, true, true);
             }
         }
     };
@@ -85,6 +126,7 @@ fn test_slice(
     headers: bool,
     use_index: bool,
     as_len: bool,
+    json_output: bool,
 ) {
     let (wrk, mut cmd) = setup(name, headers, use_index);
     if let Some(start) = start {
@@ -97,7 +139,7 @@ fn test_slice(
                 cmd.arg("--len").arg(&end.to_string());
             } else {
                 cmd.arg("--len")
-                    .arg(&(end - start.abs() as usize).to_string());
+                    .arg(&(end - start.unsigned_abs()).to_string());
             }
         } else {
             cmd.arg("--end").arg(&end.to_string());
@@ -106,19 +148,44 @@ fn test_slice(
     if !headers {
         cmd.arg("--no-headers");
     }
+    if json_output {
+        let output_file = wrk.path("output.json").to_string_lossy().to_string();
 
-    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
-    let mut expected = expected
-        .iter()
-        .map(|&s| vec![s.to_owned()])
-        .collect::<Vec<Vec<String>>>();
-    if headers {
-        expected.insert(0, svec!["header"]);
+        cmd.arg("--json").args(&["--output", &output_file]);
+
+        wrk.assert_success(&mut cmd);
+
+        let gots = wrk.read_to_string(&output_file).unwrap();
+        let gotj: serde_json::Value = serde_json::from_str(&gots).unwrap();
+        let got = gotj.to_string();
+
+        let expected_vec = expected
+            .iter()
+            .map(|&s| {
+                if headers {
+                    format!("{{\"header\":\"{}\"}}", s)
+                } else {
+                    format!("{{\"0\":\"{}\"}}", s)
+                }
+            })
+            .collect::<Vec<String>>();
+        let expected = format!("[{}]", expected_vec.join(","));
+
+        assert_eq!(got, expected);
+    } else {
+        let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+        let mut expected = expected
+            .iter()
+            .map(|&s| vec![s.to_owned()])
+            .collect::<Vec<Vec<String>>>();
+        if headers {
+            expected.insert(0, svec!["header"]);
+        }
+        assert_eq!(got, expected);
     }
-    assert_eq!(got, expected);
 }
 
-fn test_index(name: &str, idx: usize, expected: &str, headers: bool, use_index: bool) {
+fn test_index(name: &str, idx: isize, expected: &str, headers: bool, use_index: bool) {
     let (wrk, mut cmd) = setup(name, headers, use_index);
     cmd.arg("--index").arg(&idx.to_string());
     if !headers {
@@ -150,6 +217,7 @@ fn slice_negative_with_len() {
         true,
         true,
         true,
+        false,
     );
     test_slice(
         "slice_negative_start_no_headers_index_len",
@@ -159,6 +227,7 @@ fn slice_negative_with_len() {
         false,
         true,
         true,
+        false,
     );
     test_slice(
         "slice_negative_start_headers_no_index_len",
@@ -167,6 +236,41 @@ fn slice_negative_with_len() {
         &["b", "c"],
         true,
         false,
+        true,
+        false,
+    );
+}
+
+#[test]
+fn slice_negative_with_len_json() {
+    test_slice(
+        "slice_negative_start_headers_index_len_json",
+        Some(-4),
+        Some(2),
+        &["b", "c"],
+        true,
+        true,
+        true,
+        true,
+    );
+    test_slice(
+        "slice_negative_start_no_headers_index_len_json",
+        Some(-4),
+        Some(2),
+        &["b", "c"],
+        false,
+        true,
+        true,
+        true,
+    );
+    test_slice(
+        "slice_negative_start_headers_no_index_len_json",
+        Some(-4),
+        Some(2),
+        &["b", "c"],
+        true,
+        false,
+        true,
         true,
     );
 }
@@ -186,4 +290,174 @@ fn slice_index_withindex() {
 #[test]
 fn slice_index_no_headers_withindex() {
     test_index("slice_index_no_headers_withindex", 1, "b", false, true);
+}
+
+#[test]
+fn slice_neg_index() {
+    test_index("slice_neg_index", -1, "e", true, false);
+}
+#[test]
+fn slice_neg_index_no_headers() {
+    test_index("slice_neg_index_no_headers", -1, "e", false, false);
+}
+#[test]
+fn slice_neg_index_withindex() {
+    test_index("slice_neg_index_withindex", -2, "d", true, true);
+}
+#[test]
+fn slice_neg_index_no_headers_withindex() {
+    test_index("slice_neg_index_no_headers_withindex", -2, "d", false, true);
+}
+
+fn test_slice_invert(
+    name: &str,
+    start: Option<isize>,
+    end: Option<usize>,
+    expected: &[&str],
+    headers: bool,
+    use_index: bool,
+    as_len: bool,
+    json_output: bool,
+) {
+    let (wrk, mut cmd) = setup(name, headers, use_index);
+    if let Some(start) = start {
+        cmd.arg("--start").arg(&start.to_string());
+    }
+    if let Some(end) = end {
+        if as_len {
+            let start = start.unwrap_or(0);
+            if start < 0 {
+                cmd.arg("--len").arg(&end.to_string());
+            } else {
+                cmd.arg("--len")
+                    .arg(&(end - start.unsigned_abs()).to_string());
+            }
+        } else {
+            cmd.arg("--end").arg(&end.to_string());
+        }
+    }
+    if !headers {
+        cmd.arg("--no-headers");
+    }
+    cmd.arg("--invert");
+
+    if json_output {
+        let output_file = wrk.path("output.json").to_string_lossy().to_string();
+
+        cmd.arg("--json").args(&["--output", &output_file]);
+
+        wrk.assert_success(&mut cmd);
+
+        let gots = wrk.read_to_string(&output_file).unwrap();
+        let gotj: serde_json::Value = serde_json::from_str(&gots).unwrap();
+        let got = gotj.to_string();
+
+        let expected_vec = expected
+            .iter()
+            .map(|&s| {
+                if headers {
+                    format!("{{\"header\":\"{}\"}}", s)
+                } else {
+                    format!("{{\"0\":\"{}\"}}", s)
+                }
+            })
+            .collect::<Vec<String>>();
+        let expected = format!("[{}]", expected_vec.join(","));
+
+        assert_eq!(got, expected);
+    } else {
+        let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+        let mut expected = expected
+            .iter()
+            .map(|&s| vec![s.to_owned()])
+            .collect::<Vec<Vec<String>>>();
+        if headers {
+            expected.insert(0, svec!["header"]);
+        }
+        assert_eq!(got, expected);
+    }
+}
+
+#[test]
+fn slice_invert_simple() {
+    test_slice_invert(
+        "slice_invert_simple",
+        Some(0),
+        Some(1),
+        &["b", "c", "d", "e"],
+        true,
+        false,
+        false,
+        false,
+    );
+}
+
+#[test]
+fn slice_invert_middle() {
+    test_slice_invert(
+        "slice_invert_middle",
+        Some(1),
+        Some(3),
+        &["a", "d", "e"],
+        true,
+        false,
+        false,
+        false,
+    );
+}
+
+#[test]
+fn slice_invert_with_index() {
+    test_slice_invert(
+        "slice_invert_with_index",
+        Some(1),
+        Some(3),
+        &["a", "d", "e"],
+        true,
+        true,
+        false,
+        false,
+    );
+}
+
+#[test]
+fn slice_invert_json() {
+    test_slice_invert(
+        "slice_invert_json",
+        Some(1),
+        Some(3),
+        &["a", "d", "e"],
+        true,
+        false,
+        false,
+        true,
+    );
+}
+
+#[test]
+fn slice_invert_negative() {
+    test_slice_invert(
+        "slice_invert_negative",
+        Some(-2),
+        None,
+        &["a", "b", "c"],
+        true,
+        false,
+        false,
+        false,
+    );
+}
+
+#[test]
+fn slice_invert_with_len() {
+    test_slice_invert(
+        "slice_invert_with_len",
+        Some(1),
+        Some(2),
+        &["a", "c", "d", "e"],
+        true,
+        false,
+        true,
+        false,
+    );
 }

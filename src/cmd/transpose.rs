@@ -1,11 +1,4 @@
-use crate::config::{Config, Delimiter};
-use crate::util;
-use crate::CliResult;
-use csv::ByteRecord;
-use serde::Deserialize;
-use std::str;
-
-static USAGE: &str = "
+static USAGE: &str = r#"
 Transpose the rows/columns of CSV data.
 
 Note that by default this reads all of the CSV data into memory,
@@ -13,6 +6,7 @@ unless --multipass is given.
 
 Usage:
     qsv transpose [options] [<input>]
+    qsv transpose --help
 
 transpose options:
     -m, --multipass        Process the transpose by making multiple
@@ -27,14 +21,28 @@ Common options:
     -o, --output <file>    Write output to <file> instead of stdout.
     -d, --delimiter <arg>  The field delimiter for reading CSV data.
                            Must be a single character. (default: ,)
-";
+    --memcheck             Check if there is enough memory to load the entire
+                           CSV into memory using CONSERVATIVE heuristics.
+                           Ignored when --multipass option is enabled.
+"#;
+
+use std::str;
+
+use csv::ByteRecord;
+use serde::Deserialize;
+
+use crate::{
+    config::{Config, Delimiter},
+    util, CliResult,
+};
 
 #[derive(Deserialize)]
 struct Args {
-    arg_input: Option<String>,
-    flag_output: Option<String>,
+    arg_input:      Option<String>,
+    flag_output:    Option<String>,
     flag_delimiter: Option<Delimiter>,
     flag_multipass: bool,
+    flag_memcheck:  bool,
 }
 
 pub fn run(argv: &[&str]) -> CliResult<()> {
@@ -55,6 +63,11 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
 
 impl Args {
     fn in_memory_transpose(&self) -> CliResult<()> {
+        // we're loading the entire file into memory, we need to check avail mem
+        if let Some(path) = self.rconfig().path {
+            util::mem_file_check(&path, false, self.flag_memcheck)?;
+        }
+
         let mut rdr = self.rconfig().reader()?;
         let mut wtr = self.wconfig().writer()?;
         let nrows = rdr.byte_headers()?.len();
@@ -88,11 +101,11 @@ impl Args {
     }
 
     fn wconfig(&self) -> Config {
-        Config::new(&self.flag_output)
+        Config::new(self.flag_output.as_ref())
     }
 
     fn rconfig(&self) -> Config {
-        Config::new(&self.arg_input)
+        Config::new(self.arg_input.as_ref())
             .delimiter(self.flag_delimiter)
             .no_headers(true)
     }

@@ -42,10 +42,64 @@ fn dedup_no_case() {
     );
 
     let mut cmd = wrk.command("dedup");
-    cmd.arg("-C").arg("in.csv");
+    cmd.arg("-i").arg("in.csv");
 
     let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
-    let expected = vec![svec!["N", "S"], svec!["10", "a"], svec!["2", "b"]];
+    let expected = vec![svec!["N", "S"], svec!["10", "a"], svec!["2", "B"]];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn dedup_issue_1381() {
+    let wrk = Workdir::new("dedup_issue_1381");
+    wrk.create(
+        "in.csv",
+        vec![
+            svec!["office"],
+            svec!["Member of legislative assembly"],
+            svec!["Member of Legislative Assembly"],
+            svec!["Member of Tamil Nadu Legislative Assembly"],
+        ],
+    );
+
+    let mut cmd = wrk.command("dedup");
+    cmd.arg("-i").arg("in.csv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["office"],
+        svec!["Member of Legislative Assembly"],
+        svec!["Member of Tamil Nadu Legislative Assembly"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn dedup_issue_1665_numeric() {
+    let wrk = Workdir::new("dedup_issue_1665_numeric");
+    wrk.create(
+        "in.csv",
+        vec![
+            svec!["data"],
+            svec!["1"],
+            svec!["3"],
+            svec!["3"],
+            svec!["5"],
+            svec!["10"],
+        ],
+    );
+
+    let mut cmd = wrk.command("dedup");
+    cmd.arg("-N").arg("in.csv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["data"],
+        svec!["1"],
+        svec!["3"],
+        svec!["5"],
+        svec!["10"],
+    ];
     assert_eq!(got, expected);
 }
 
@@ -64,10 +118,24 @@ fn dedup_select() {
     );
 
     let mut cmd = wrk.command("dedup");
-    cmd.args(&["-s", "N"]).arg("in.csv");
+    cmd.args(["-s", "N"]).arg("in.csv");
 
     let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
     let expected = vec![svec!["N", "S"], svec!["10", "a"], svec!["2", "B"]];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn dedup_select_issue774() {
+    let wrk = Workdir::new("dedup_select_issue774");
+    let test_file = wrk.load_test_file("dedup-test.csv");
+
+    let mut cmd = wrk.command("dedup");
+    cmd.args(["-s", "id"]).arg(test_file);
+
+    let got: String = wrk.stdout(&mut cmd);
+    let expected = wrk.load_test_resource("dedup-by-id-test-expected.csv");
+
     assert_eq!(got, expected);
 }
 
@@ -126,7 +194,7 @@ fn dedup_sorted_nocase() {
     );
 
     let mut cmd = wrk.command("dedup");
-    cmd.arg("--sorted").arg("--no-case").arg("in.csv");
+    cmd.arg("--sorted").arg("--ignore-case").arg("in.csv");
 
     let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
     let expected = vec![
@@ -162,14 +230,14 @@ fn dedup_alreadysorted_nocase() {
     );
 
     let mut cmd = wrk.command("dedup");
-    cmd.arg("--no-case").arg("in.csv");
+    cmd.arg("--ignore-case").arg("in.csv");
 
     let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
     let expected = vec![
         svec!["N", "S"],
         svec!["10", "a"],
         svec!["100", "a"],
-        svec!["20", "b"],
+        svec!["20", "B"],
         svec!["3", "c"],
         svec!["4", "d"],
     ];

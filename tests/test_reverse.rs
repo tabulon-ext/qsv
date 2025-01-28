@@ -1,8 +1,13 @@
-use crate::workdir::Workdir;
-
-use crate::{qcheck, Csv, CsvData};
+use crate::{qcheck, workdir::Workdir, Csv, CsvData};
 
 fn prop_reverse(name: &str, rows: CsvData, headers: bool) -> bool {
+    if rows.is_empty()
+        || rows[0].contains(&"\u{feff}".to_string())
+        || rows.last().unwrap().contains(&"\u{feff}".to_string())
+    {
+        return true;
+    }
+
     let wrk = Workdir::new(name);
     wrk.create("in.csv", rows.clone());
 
@@ -20,6 +25,12 @@ fn prop_reverse(name: &str, rows: CsvData, headers: bool) -> bool {
         vec![]
     };
     expected.reverse();
+    if expected.is_empty()
+        || expected[0].contains(&"\u{feff}".to_string())
+        || expected.last().unwrap().contains(&"\u{feff}".to_string())
+    {
+        return true;
+    }
     if !headers.is_empty() {
         expected.insert(0, headers);
     }
@@ -38,6 +49,62 @@ fn prop_reverse_headers() {
 fn prop_reverse_no_headers() {
     fn p(rows: CsvData) -> bool {
         prop_reverse("prop_reverse_no_headers", rows, false)
+    }
+    qcheck(p as fn(CsvData) -> bool);
+}
+
+fn prop_reverse_indexed(name: &str, rows: CsvData, headers: bool) -> bool {
+    if rows.is_empty() {
+        return true;
+    }
+
+    if rows[0].contains(&"\u{feff}".to_string())
+        || rows.last().unwrap().contains(&"\u{feff}".to_string())
+    {
+        return true;
+    }
+
+    let wrk = Workdir::new(name);
+    wrk.create_indexed("in.csv", rows.clone());
+
+    let mut cmd = wrk.command("reverse");
+    cmd.arg("in.csv");
+    if !headers {
+        cmd.arg("--no-headers");
+    }
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let mut expected = rows.to_vecs();
+    let headers = if headers && !expected.is_empty() {
+        expected.remove(0)
+    } else {
+        vec![]
+    };
+    expected.reverse();
+    if expected.is_empty()
+        || expected[0].contains(&"\u{feff}".to_string())
+        || expected.last().unwrap().contains(&"\u{feff}".to_string())
+    {
+        return true;
+    }
+    if !headers.is_empty() {
+        expected.insert(0, headers);
+    }
+    rassert_eq!(got, expected)
+}
+
+#[test]
+fn prop_reverse_headers_indexed() {
+    fn p(rows: CsvData) -> bool {
+        prop_reverse_indexed("prop_reverse_headers_indexed", rows, true)
+    }
+    qcheck(p as fn(CsvData) -> bool);
+}
+
+#[test]
+fn prop_reverse_no_headers_indexed() {
+    fn p(rows: CsvData) -> bool {
+        prop_reverse_indexed("prop_reverse_no_headers_indexed", rows, false)
     }
     qcheck(p as fn(CsvData) -> bool);
 }

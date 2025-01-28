@@ -13,7 +13,7 @@ macro_rules! part_eq {
 
 fn data(headers: bool) -> Vec<Vec<String>> {
     let mut rows = vec![
-        svec!["NY", "Manhatten"],
+        svec!["NY", "Manhattan"],
         svec!["CA", "San Francisco"],
         svec!["TX", "Dallas"],
         svec!["NY", "Buffalo"],
@@ -47,7 +47,7 @@ CA,San Francisco
         "NY.csv",
         "\
 state,city
-NY,Manhatten
+NY,Manhattan
 NY,Buffalo
 "
     );
@@ -87,7 +87,7 @@ San Francisco
         "NY.csv",
         "\
 city
-Manhatten
+Manhattan
 Buffalo
 "
     );
@@ -125,7 +125,7 @@ CA,San Francisco
         wrk,
         "NY.csv",
         "\
-NY,Manhatten
+NY,Manhattan
 NY,Buffalo
 "
     );
@@ -163,7 +163,7 @@ San Francisco
         wrk,
         "NY.csv",
         "\
-Manhatten
+Manhattan
 Buffalo
 "
     );
@@ -195,7 +195,7 @@ fn partition_custom_filename() {
     wrk.create("in.csv", data(true));
 
     let mut cmd = wrk.command("partition");
-    cmd.args(&["--filename", "state-{}-partition.csv"])
+    cmd.args(["--filename", "state-{}-partition.csv"])
         .arg("state")
         .arg(&wrk.path("."))
         .arg("in.csv");
@@ -210,7 +210,7 @@ fn partition_custom_filename_with_directory() {
     wrk.create("in.csv", data(true));
 
     let mut cmd = wrk.command("partition");
-    cmd.args(&["--filename", "{}/cities.csv"])
+    cmd.args(["--filename", "{}/cities.csv"])
         .arg("state")
         .arg(&wrk.path("."))
         .arg("in.csv");
@@ -226,14 +226,14 @@ fn partition_invalid_filename() {
     wrk.create("in.csv", data(true));
 
     let mut cmd = wrk.command("partition");
-    cmd.args(&["--filename", "foo.csv"])
+    cmd.args(["--filename", "foo.csv"])
         .arg("state")
         .arg(&wrk.path("."))
         .arg("in.csv");
     wrk.assert_err(&mut cmd);
 
     let mut cmd = wrk.command("partition");
-    cmd.args(&["--filename", "{}{}.csv"])
+    cmd.args(["--filename", "{}{}.csv"])
         .arg("state")
         .arg(&wrk.path("."))
         .arg("in.csv");
@@ -340,7 +340,7 @@ fn partition_with_prefix_length() {
     wrk.create("in.csv", prefix_data());
 
     let mut cmd = wrk.command("partition");
-    cmd.args(&["--prefix-length", "1"])
+    cmd.args(["--prefix-length", "1"])
         .arg("state")
         .arg(&wrk.path("."))
         .arg("in.csv");
