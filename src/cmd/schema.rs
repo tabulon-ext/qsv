@@ -1,49 +1,66 @@
-use crate::cmd::stats::Stats;
-use crate::config::{Config, Delimiter};
-use crate::select::SelectColumns;
-use crate::util;
-use crate::CliError;
-use crate::CliResult;
-use ahash::AHashMap;
-use csv::ByteRecord;
-use grex::RegExpBuilder;
-use log::{debug, error, info, warn};
-use serde::Deserialize;
-use serde_json::{json, value::Number, Map, Value};
-use stats::Frequencies;
-use std::{collections::HashSet, fs::File, io::Write, path::Path};
-
-macro_rules! fail {
-    ($mesg:expr) => {
-        return Err(CliError::Other($mesg));
-    };
-}
-
-static USAGE: &str = "
+static USAGE: &str = r#"
 Generate JSON Schema from CSV data.
 
-This command generates reference JSON Schema (Draft 7) from CSV data, 
-including validation rules based on input data range.
+This command derives a JSON Schema Validation (Draft 7) file from CSV data, 
+including validation rules based on data type and input data domain/range.
+https://json-schema.org/draft/2020-12/json-schema-validation.html
 
 Running `validate` command on original input CSV with generated schema 
 should not flag any invalid records.
 
-Generated schema file has `.schema.json` postfix appended. For example, 
-for input `mydata.csv`, schema file would be `mydata.csv.schema.json`. 
-If piped from stdin, then schema file would be `stdin.csv.schema.json` and
-a `stdin.csv` file will created with stdin's contents as well.
+The intended workflow is to use the `schema` command to generate a JSON schema file
+from representative CSV data, fine-tune the JSON schema file as needed, and then use
+the `validate` command to validate other CSV data with the same structure using the
+generated JSON schema.
+
+The generated JSON schema file has `.schema.json` suffix appended. For example, 
+for input `mydata.csv`, the generated JSON schema is `mydata.csv.schema.json`.
+
+If piped from stdin, the schema file will be `stdin.csv.schema.json` and
+a `stdin.csv` file will be created with stdin's contents as well.
 
 Note that `stdin.csv` will be overwritten if it already exists.
 
+Schema generation can be a compute-intensive process, especially for large CSV files.
+To speed up generation, the `schema` command will reuse a `stats.csv.data.jsonl` file if it
+exists and is current (i.e. stats generated with --cardinality and --infer-dates options).
+Otherwise, it will run the `stats` command to generate the `stats.csv.data.jsonl` file first,
+and then use that to generate the schema file.
+
+For examples, see https://github.com/dathere/qsv/blob/master/tests/test_schema.rs.
+
 Usage:
     qsv schema [options] [<input>]
+    qsv schema --help
 
 Schema options:
-    --enum-threshold NUM       Cardinality threshold for adding enum
-                               constraints [default: 50]
-    --strict-dates             Enforce Internet Datetime format (RFC-3339)
-                               for detected datetime columns
-    --pattern-columns <args>   Select columns to add pattern constraints
+    --enum-threshold <num>     Cardinality threshold for adding enum constraints.
+                               Enum constraints are compiled for String & Integer types.
+                               [default: 50]
+    -i, --ignore-case          Ignore case when compiling unique values for enum constraints.
+                               Do note however that the `validate` command is case-sensitive
+                               when validating against enum constraints.
+    --strict-dates             Enforce Internet Datetime format (RFC-3339) for
+                               detected date/datetime columns. Otherwise, even if
+                               columns are inferred as date/datetime, they are set
+                               to type "string" in the schema instead of
+                               "date" or "date-time".
+    --pattern-columns <args>   Select columns to derive regex pattern constraints.
+                               That is, this will create a regular expression
+                               that matches all values for each specified column.
+                               Columns are selected using `select` syntax 
+                               (see `qsv select --help` for details).
+    --dates-whitelist <list>   The case-insensitive patterns to look for when 
+                               shortlisting fields for date inference.
+                               i.e. if the field's name has any of these patterns,
+                               it is shortlisted for date inferencing.
+                               Set to "all" to inspect ALL fields for
+                               date/datetime types.
+                               [default: date,time,due,open,close,created]
+    --prefer-dmy               Prefer to parse dates in dmy format.
+                               Otherwise, use mdy format.
+    --force                    Force recomputing cardinality and unique values
+                               even if stats cache file exists and is current.
     --stdout                   Send generated JSON schema file to stdout instead.
     -j, --jobs <arg>           The number of jobs to run in parallel.
                                When not set, the number of jobs is set to the
@@ -52,38 +69,44 @@ Schema options:
 Common options:
     -h, --help                 Display this message
     -n, --no-headers           When set, the first row will not be interpreted
-                               as headers. Namely, it will be sorted with the rest
+                               as headers. Namely, it will be processed with the rest
                                of the rows. Otherwise, the first row will always
                                appear as the header row in the output.
     -d, --delimiter <arg>      The field delimiter for reading CSV data.
                                Must be a single character. [default: ,]
-";
+    --memcheck                 Check if there is enough memory to load the entire
+                               CSV into memory using CONSERVATIVE heuristics.
+"#;
 
-#[derive(Deserialize, Clone)]
-struct Args {
-    flag_enum_threshold: usize,
-    flag_strict_dates: bool,
-    flag_pattern_columns: SelectColumns,
-    flag_stdout: bool,
-    flag_jobs: Option<usize>,
-    flag_no_headers: bool,
-    flag_delimiter: Option<Delimiter>,
-    arg_input: Option<String>,
-}
+use std::{fs::File, io::Write, path::Path};
+
+use ahash::{AHashMap, AHashSet};
+use csv::ByteRecord;
+use grex::RegExpBuilder;
+use itertools::Itertools;
+use log::{debug, error, info, warn};
+use rayon::slice::ParallelSliceMut;
+use serde_json::{json, value::Number, Map, Value};
+use stats::Frequencies;
+
+use crate::{cmd::stats::StatsData, config::Config, util, util::StatsMode, CliResult};
 
 const STDIN_CSV: &str = "stdin.csv";
 
 pub fn run(argv: &[&str]) -> CliResult<()> {
-    let preargs: Args = util::get_args(USAGE, argv)?;
-    let mut args = preargs.clone();
+    let mut args: util::SchemaArgs = util::get_args(USAGE, argv)?;
 
     // if using stdin, we create a stdin.csv file as stdin is not seekable and we need to
     // open the file multiple times to compile stats/unique values, etc.
-    let (input_path, input_filename) = if preargs.arg_input.is_none() {
+    // We use a fixed "stdin.csv" filename instead of a temporary file with random characters
+    // so the name of the generated schema.json file is readable and predictable
+    // (stdin.csv.schema.json)
+    let (input_path, input_filename) = if args.arg_input.is_none() {
         let mut stdin_file = File::create(STDIN_CSV)?;
         let stdin = std::io::stdin();
         let mut stdin_handle = stdin.lock();
         std::io::copy(&mut stdin_handle, &mut stdin_file)?;
+        drop(stdin_handle);
         args.arg_input = Some(STDIN_CSV.to_string());
         (STDIN_CSV.to_string(), STDIN_CSV.to_string())
     } else {
@@ -95,26 +118,42 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
         (args.arg_input.clone().unwrap(), filename)
     };
 
+    // we're loading the entire file into memory, we need to check avail mem
+    util::mem_file_check(
+        &std::path::PathBuf::from(&input_path),
+        false,
+        args.flag_memcheck,
+    )?;
+
+    // we can do this directly here, since args is mutable and
+    // Config has not been created yet at this point
+    args.flag_prefer_dmy = args.flag_prefer_dmy || util::get_envvar_flag("QSV_PREFER_DMY");
+    if args.flag_prefer_dmy {
+        winfo!("Prefer DMY set.");
+    }
+
     // build schema for each field by their inferred type, min/max value/length, and unique values
     let mut properties_map: Map<String, Value> =
-        match infer_schema_from_stats(&args, &input_filename) {
+        match infer_schema_from_stats(&args, &input_filename, false) {
             Ok(map) => map,
             Err(e) => {
-                let msg = format!("Failed to infer schema via stats and frequency: {e}");
-                fail!(msg);
-            }
+                return fail_clierror!(
+                    "Failed to infer schema via stats and frequency from {input_filename}: {e}"
+                );
+            },
         };
 
     // generate regex pattern for selected String columns
     let pattern_map = generate_string_patterns(&args, &properties_map)?;
 
     // enrich properties map with pattern constraint for String fields
-    for (field_name, field_def) in properties_map.iter_mut() {
+    for (field_name, field_def) in &mut properties_map {
         // dbg!(&field_name, &field_def);
         if pattern_map.contains_key(field_name) && should_emit_pattern_constraint(field_def) {
             let field_def_map = field_def.as_object_mut().unwrap();
             let pattern = Value::String(pattern_map[field_name].clone());
-            field_def_map.insert("pattern".to_string(), pattern);
+            field_def_map.insert("pattern".to_string(), pattern.clone());
+            winfo!("Added regex pattern constraint for field: {field_name} -> {pattern}");
         }
     }
 
@@ -131,83 +170,99 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
         "required": Value::Array(required_fields)
     });
 
-    let schema_pretty = serde_json::to_string_pretty(&schema).expect("prettify schema json");
+    let schema_pretty = match serde_json::to_string_pretty(&schema) {
+        Ok(s) => s,
+        Err(e) => return fail_clierror!("Cannot prettify schema json: {e}"),
+    };
 
     if args.flag_stdout {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
 
-        handle
-            .write_all(schema_pretty.as_bytes())
-            .expect("unable to write schema file to stdout");
-
-        handle.flush().unwrap();
+        handle.write_all(schema_pretty.as_bytes())?;
+        handle.flush()?;
 
         info!("Schema written to stdout");
     } else {
         let schema_output_filename = input_path + ".schema.json";
-        let mut schema_output_file =
-            File::create(&schema_output_filename).expect("unable to create schema output file");
+        let mut schema_output_file = File::create(&schema_output_filename)?;
 
-        schema_output_file
-            .write_all(schema_pretty.as_bytes())
-            .expect("unable to write schema file");
+        schema_output_file.write_all(schema_pretty.as_bytes())?;
+        schema_output_file.flush()?;
 
-        // flush error report; file gets closed automagically when out-of-scope
-        schema_output_file.flush().unwrap();
-
-        println!("Schema written to {schema_output_filename}");
-        info!("Schema written to {schema_output_filename}");
+        woutinfo!("Schema written to {schema_output_filename}");
     }
 
     Ok(())
 }
 
-/// Builds JSON MAP object that corresponds to the "properties" object of JSON Schema (Draft 7) by looking at CSV value stats
-/// Supported JSON Schema validation vocabularies:
+/// Builds JSON MAP object that corresponds to the "properties" object of JSON Schema (Draft 7
+/// 2020-12) by looking at CSV value stats Supported JSON Schema validation vocabularies:
 ///  * type
+///    - "null", "boolean", "number", "integer", or "string", with built-in support for date/datetime
+///      as "string" with "format" constraint (https://json-schema.org/draft/2020-12/json-schema-validation#section-7.3.1)
 ///  * enum
+///  * const
 ///  * minLength
 ///  * maxLength
-///  * min
-///  * max
-#[allow(clippy::len_zero)]
-fn infer_schema_from_stats(args: &Args, input_filename: &str) -> CliResult<Map<String, Value>> {
+///  * minimum
+///  * maximum
+pub fn infer_schema_from_stats(
+    args: &util::SchemaArgs,
+    input_filename: &str,
+    quiet: bool,
+) -> CliResult<Map<String, Value>> {
     // invoke cmd::stats
-    let (csv_fields, csv_stats, stats_col_index_map) = get_stats_records(args)?;
+    let (csv_fields, csv_stats, _) = util::get_stats_records(args, StatsMode::Schema)?;
+
+    // amortize memory allocation
+    let mut low_cardinality_column_indices: Vec<u64> =
+        Vec::with_capacity(args.flag_enum_threshold as usize);
+    let mut const_column_indices: Vec<u64> = Vec::new();
 
     // build column selector arg to invoke cmd::frequency with
     let column_select_arg: String = build_low_cardinality_column_selector_arg(
+        &mut low_cardinality_column_indices,
         args.flag_enum_threshold,
+        &mut const_column_indices,
         &csv_fields,
         &csv_stats,
-        &stats_col_index_map,
     );
 
     // invoke cmd::frequency to get unique values for each field
     let unique_values_map = get_unique_values(args, &column_select_arg)?;
 
     // map holds "properties" object of json schema
-    let mut properties_map: Map<String, Value> = Map::new();
+    let mut properties_map: Map<String, Value> = Map::with_capacity(csv_fields.len());
+
+    // amortize memory allocations
+    let mut field_map: Map<String, Value> = Map::with_capacity(10);
+    let mut type_list: Vec<Value> = Vec::with_capacity(4);
+    let mut enum_list: Vec<Value> = Vec::with_capacity(args.flag_enum_threshold as usize);
+    let mut const_value: Value;
+    let mut header_byte_slice;
+    let mut header_string;
+    let mut stats_record;
+    let mut col_type;
+    let mut col_null_count;
+    let empty_string = String::new();
 
     // generate definition for each CSV column/field and add to properties_map
+    #[allow(clippy::needless_range_loop)]
     for i in 0..csv_fields.len() {
-        let header_byte_slice = csv_fields.get(i).unwrap();
+        header_byte_slice = csv_fields.get(i).unwrap();
+
         // convert csv header to string
-        let header_string = convert_to_string(header_byte_slice)?;
+        header_string = convert_to_string(header_byte_slice)?;
 
         // grab stats record for current column
-        let stats_record = csv_stats.get(i).unwrap().clone().to_record();
-
-        debug!("stats[{header_string}]: {stats_record:?}");
+        stats_record = csv_stats[i].clone();
 
         // get Type from stats record
-        let col_type = stats_record.get(stats_col_index_map["type"]).unwrap();
+        col_type = stats_record.r#type.clone();
+
         // get NullCount
-        let col_null_count = match stats_record.get(stats_col_index_map["nullcount"]) {
-            Some(s) => s.parse::<usize>().unwrap_or(0_usize),
-            None => 0_usize,
-        };
+        col_null_count = stats_record.nullcount;
 
         // debug!(
         //     "{header_string}: type={col_type}, optional={}",
@@ -215,98 +270,119 @@ fn infer_schema_from_stats(args: &Args, input_filename: &str) -> CliResult<Map<S
         // );
 
         // map for holding field definition
-        let mut field_map: Map<String, Value> = Map::new();
+        field_map.clear();
         let desc = format!("{header_string} column from {input_filename}");
         field_map.insert("description".to_string(), Value::String(desc));
 
         // use list to hold types, since optional fields get appended a "null" type
-        let mut type_list: Vec<Value> = Vec::new();
-        let mut enum_list: Vec<Value> = Vec::new();
+        type_list.clear();
+        enum_list.clear();
+        const_value = Value::Null;
 
-        match col_type {
+        match col_type.as_str() {
             "String" => {
                 type_list.push(Value::String("string".to_string()));
 
                 // minLength constraint
-                if let Some(min_length_str) = stats_record.get(stats_col_index_map["min_length"]) {
-                    let min_length = min_length_str.parse::<u32>().unwrap();
+                if let Some(min_length) = stats_record.min_length {
                     field_map.insert(
                         "minLength".to_string(),
                         Value::Number(Number::from(min_length)),
                     );
-                };
+                }
 
                 // maxLength constraint
-                if let Some(max_length_str) = stats_record.get(stats_col_index_map["max_length"]) {
-                    let max_length = max_length_str.parse::<u32>().unwrap();
+                if let Some(max_length) = stats_record.max_length {
                     field_map.insert(
                         "maxLength".to_string(),
                         Value::Number(Number::from(max_length)),
                     );
-                };
+                }
 
-                // enum constraint
-                if let Some(values) = unique_values_map.get(&header_string) {
-                    enum_list.reserve(values.len()); // to save on allocs
+                // const or enum constraint
+                if const_column_indices.contains(&((i + 1) as u64))
+                    && unique_values_map.contains_key(&header_string)
+                {
+                    const_value = Value::String(
+                        unique_values_map[&header_string]
+                            .first()
+                            .unwrap_or(&empty_string)
+                            .to_string(),
+                    );
+                } else if let Some(values) = unique_values_map.get(&header_string) {
                     for value in values {
                         enum_list.push(Value::String(value.to_string()));
                     }
                 }
-            }
+            },
+            "Integer" => {
+                type_list.push(Value::String("integer".to_string()));
+
+                if let Some(min) = stats_record.min {
+                    field_map.insert(
+                        "minimum".to_string(),
+                        Value::Number(Number::from(
+                            atoi_simd::parse::<i64>(min.as_bytes()).unwrap(),
+                        )),
+                    );
+                }
+
+                if let Some(max) = stats_record.max {
+                    field_map.insert(
+                        "maximum".to_string(),
+                        Value::Number(Number::from(
+                            atoi_simd::parse::<i64>(max.as_bytes()).unwrap(),
+                        )),
+                    );
+                }
+
+                // enum constraint
+                if let Some(values) = unique_values_map.get(&header_string) {
+                    for value in values {
+                        let int_value = atoi_simd::parse::<i64>(value.as_bytes()).unwrap();
+                        enum_list.push(Value::Number(Number::from(int_value)));
+                    }
+                }
+            },
+            "Float" => {
+                type_list.push(Value::String("number".to_string()));
+
+                if let Some(min) = stats_record.min {
+                    field_map.insert(
+                        "minimum".to_string(),
+                        Value::Number(Number::from_f64(min.parse::<f64>().unwrap()).unwrap()),
+                    );
+                }
+
+                if let Some(max) = stats_record.max {
+                    field_map.insert(
+                        "maximum".to_string(),
+                        Value::Number(Number::from_f64(max.parse::<f64>().unwrap()).unwrap()),
+                    );
+                }
+            },
+            "NULL" => {
+                type_list.push(Value::String("null".to_string()));
+            },
             "Date" => {
                 type_list.push(Value::String("string".to_string()));
 
                 if args.flag_strict_dates {
                     field_map.insert("format".to_string(), Value::String("date".to_string()));
                 }
-            }
+            },
             "DateTime" => {
                 type_list.push(Value::String("string".to_string()));
 
                 if args.flag_strict_dates {
                     field_map.insert("format".to_string(), Value::String("date-time".to_string()));
                 }
-            }
-            "Integer" => {
-                type_list.push(Value::String("integer".to_string()));
-
-                if let Some(min_str) = stats_record.get(stats_col_index_map["min"]) {
-                    let min = min_str.parse::<i64>().unwrap();
-                    field_map.insert("minimum".to_string(), Value::Number(Number::from(min)));
-                };
-
-                if let Some(max_str) = stats_record.get(stats_col_index_map["max"]) {
-                    let max = max_str.parse::<i64>().unwrap();
-                    field_map.insert("maximum".to_string(), Value::Number(Number::from(max)));
-                };
-            }
-            "Float" => {
-                type_list.push(Value::String("number".to_string()));
-
-                if let Some(min_str) = stats_record.get(stats_col_index_map["min"]) {
-                    let min = min_str.parse::<f64>().unwrap();
-                    field_map.insert(
-                        "minimum".to_string(),
-                        Value::Number(Number::from_f64(min).unwrap()),
-                    );
-                };
-
-                if let Some(max_str) = stats_record.get(stats_col_index_map["max"]) {
-                    let max = max_str.parse::<f64>().unwrap();
-                    field_map.insert(
-                        "maximum".to_string(),
-                        Value::Number(Number::from_f64(max).unwrap()),
-                    );
-                };
-            }
-            "NULL" => {
-                type_list.push(Value::String("null".to_string()));
-            }
+            },
             _ => {
-                warn!("Stats gave unexpected field type '{col_type}', default to JSON String.");
-                // defaults to JSON String
+                // we do not support other types like Array or Object, default to JSON String
+                wwarn!("Stats gave unexpected field type '{col_type}', default to JSON String.");
                 type_list.push(Value::String("string".to_string()));
-            }
+            },
         }
 
         if col_null_count > 0 && !type_list.contains(&Value::String("null".to_string())) {
@@ -315,108 +391,68 @@ fn infer_schema_from_stats(args: &Args, input_filename: &str) -> CliResult<Map<S
             type_list.push(Value::String("null".to_string()));
         }
 
-        if col_null_count > 0 && enum_list.len() > 0 {
-            // for fields that are not mandatory and actualy have enum list generated,
+        if col_null_count > 0 && !enum_list.is_empty() {
+            // for fields that are not mandatory and actually have enum list generated,
             // having JSON NULL indicates that missing value is allowed
             enum_list.push(Value::Null);
         }
 
-        if type_list.len() > 0 {
-            field_map.insert("type".to_string(), Value::Array(type_list));
+        if !type_list.is_empty() {
+            field_map.insert("type".to_string(), Value::Array(type_list.clone()));
         }
 
-        if enum_list.len() > 0 {
-            field_map.insert("enum".to_string(), Value::Array(enum_list));
+        // add an enum or const constraint
+        // if enum list is empty, see if we have a const
+        if enum_list.is_empty() {
+            if const_value != Value::Null {
+                field_map.insert("const".to_string(), const_value.clone());
+                if !quiet {
+                    winfo!("Const generated for field '{header_string}': {const_value:?}");
+                }
+            }
+        } else {
+            field_map.insert("enum".to_string(), Value::Array(enum_list.clone()));
+            if !quiet {
+                winfo!(
+                    "Enum list generated for field '{header_string}' ({} value/s)",
+                    enum_list.len()
+                );
+            }
         }
 
         // add current field definition to properties map
-        properties_map.insert(header_string, Value::Object(field_map));
+        properties_map.insert(header_string, Value::Object(field_map.clone()));
     }
 
     Ok(properties_map)
 }
 
-/// get stats records from cmd::stats
-/// returns tuple (csv_fields, csv_stats, stats_col_index_map)
-fn get_stats_records(args: &Args) -> CliResult<(ByteRecord, Vec<Stats>, AHashMap<String, usize>)> {
-    let stats_args = crate::cmd::stats::Args {
-        arg_input: args.arg_input.clone(),
-        flag_select: crate::select::SelectColumns::parse("").unwrap(),
-        flag_everything: false,
-        flag_mode: false,
-        flag_cardinality: true,
-        flag_median: false,
-        flag_quartiles: false,
-        flag_nulls: false,
-        flag_infer_dates: true,
-        flag_jobs: Some(util::njobs(args.flag_jobs)),
-        flag_output: None,
-        flag_no_headers: args.flag_no_headers,
-        flag_delimiter: args.flag_delimiter,
-    };
-
-    let (csv_fields, csv_stats) = match stats_args.rconfig().indexed() {
-        Ok(o) => match o {
-            None => {
-                info!("no index, triggering sequential stats");
-                stats_args.sequential_stats()
-            }
-            Some(idx) => {
-                info!("has index, triggering parallel stats");
-                stats_args.parallel_stats(idx)
-            }
-        },
-        Err(e) => {
-            warn!("error determining if indexed, triggering sequential stats: {e}");
-            stats_args.sequential_stats()
-        }
-    }?;
-
-    let stats_columns = stats_args.stat_headers();
-    debug!("stats columns: {stats_columns:?}");
-
-    let mut stats_col_index_map = AHashMap::new();
-
-    for (i, col) in stats_columns.iter().enumerate() {
-        if col != "field" {
-            // need offset by 1 due to extra "field" column in headers that's not in stats records
-            stats_col_index_map.insert(col.to_owned(), i - 1);
-        }
-    }
-
-    Ok((csv_fields, csv_stats, stats_col_index_map))
-}
-
 /// get column selector argument string for low cardinality columns
 fn build_low_cardinality_column_selector_arg(
-    enum_cardinality_threshold: usize,
+    low_cardinality_column_indices: &mut Vec<u64>,
+    enum_cardinality_threshold: u64,
+    const_column_indices: &mut Vec<u64>,
     csv_fields: &ByteRecord,
-    csv_stats: &[Stats],
-    stats_col_index_map: &AHashMap<String, usize>,
+    csv_stats: &[StatsData],
 ) -> String {
-    let mut low_cardinality_column_indices = Vec::with_capacity(enum_cardinality_threshold + 1);
+    low_cardinality_column_indices.clear();
 
     // identify low cardinality columns
+    #[allow(clippy::needless_range_loop)]
     for i in 0..csv_fields.len() {
-        // grab stats record for current column
-        let stats_record = csv_stats.get(i).unwrap().clone().to_record();
-
         // get Cardinality
-        let col_cardinality = match stats_record.get(stats_col_index_map["cardinality"]) {
-            Some(s) => s.parse::<usize>().unwrap_or(0_usize),
-            None => 0_usize,
-        };
-        // debug!("column_{i}: cardinality={col_cardinality}");
+        let col_cardinality = csv_stats[i].cardinality;
 
-        if col_cardinality <= enum_cardinality_threshold {
+        if col_cardinality == 1 {
+            const_column_indices.push((i + 1) as u64);
+        } else if col_cardinality > 1 && col_cardinality <= enum_cardinality_threshold {
             // column selector uses 1-based index
-            low_cardinality_column_indices.push(i + 1);
-        };
+            low_cardinality_column_indices.push((i + 1) as u64);
+        }
     }
 
     debug!("low cardinality columns: {low_cardinality_column_indices:?}");
 
-    use itertools::Itertools;
     let column_select_arg: String = low_cardinality_column_indices
         .iter()
         .map(ToString::to_string)
@@ -425,32 +461,46 @@ fn build_low_cardinality_column_selector_arg(
     column_select_arg
 }
 
-/// get frequency tables from cmd::stats
-/// returns map of unique valules keyed by header
+/// get frequency tables from `cmd::frequency`
+/// returns map of unique values keyed by header
 fn get_unique_values(
-    args: &Args,
+    args: &util::SchemaArgs,
     column_select_arg: &str,
 ) -> CliResult<AHashMap<String, Vec<String>>> {
     // prepare arg for invoking cmd::frequency
     let freq_args = crate::cmd::frequency::Args {
-        arg_input: args.arg_input.clone(),
-        flag_select: crate::select::SelectColumns::parse(column_select_arg).unwrap(),
-        flag_limit: args.flag_enum_threshold,
-        flag_asc: false,
-        flag_no_nulls: true,
-        flag_jobs: Some(util::njobs(args.flag_jobs)),
-        flag_output: None,
-        flag_no_headers: args.flag_no_headers,
-        flag_delimiter: args.flag_delimiter,
+        arg_input:            args.arg_input.clone(),
+        flag_select:          crate::select::SelectColumns::parse(column_select_arg).unwrap(),
+        flag_limit:           args.flag_enum_threshold as isize,
+        flag_unq_limit:       args.flag_enum_threshold as usize,
+        flag_lmt_threshold:   0,
+        flag_pct_dec_places:  -5,
+        flag_other_sorted:    false,
+        flag_other_text:      "Other".to_string(),
+        flag_asc:             false,
+        flag_no_nulls:        true,
+        flag_no_trim:         false,
+        flag_ignore_case:     args.flag_ignore_case,
+        flag_all_unique_text: "<ALL UNIQUE>".to_string(),
+        flag_jobs:            Some(util::njobs(args.flag_jobs)),
+        flag_output:          None,
+        flag_no_headers:      args.flag_no_headers,
+        flag_delimiter:       args.flag_delimiter,
+        flag_memcheck:        args.flag_memcheck,
+        flag_vis_whitespace:  false,
     };
 
+    let curr_mode = std::env::var("QSV_STATSCACHE_MODE");
+    std::env::set_var("QSV_STATSCACHE_MODE", "none");
     let (headers, ftables) = match freq_args.rconfig().indexed()? {
         Some(ref mut idx) => freq_args.parallel_ftables(idx),
         _ => freq_args.sequential_ftables(),
     }?;
+    if let Ok(orig_mode) = curr_mode {
+        std::env::set_var("QSV_STATSCACHE_MODE", orig_mode);
+    }
 
     let unique_values_map = construct_map_of_unique_values(&headers, &ftables)?;
-
     Ok(unique_values_map)
 }
 
@@ -460,12 +510,12 @@ fn construct_map_of_unique_values(
     frequency_tables: &[Frequencies<Vec<u8>>],
 ) -> CliResult<AHashMap<String, Vec<String>>> {
     let mut unique_values_map: AHashMap<String, Vec<String>> = AHashMap::new();
-
+    let mut unique_values = Vec::with_capacity(freq_csv_fields.len());
     // iterate through fields and gather unique values for each field
     for (i, header_byte_slice) in freq_csv_fields.iter().enumerate() {
-        let mut unique_values = Vec::new();
+        unique_values.clear();
 
-        for (val_byte_vec, _count) in frequency_tables[i].most_frequent() {
+        for (val_byte_vec, _count) in frequency_tables[i].most_frequent().0 {
             let val_string = convert_to_string(val_byte_vec.as_slice())?;
             unique_values.push(val_string);
         }
@@ -473,16 +523,18 @@ fn construct_map_of_unique_values(
         let header_string = convert_to_string(header_byte_slice)?;
 
         // sort the values so enum list so schema can be diff'ed between runs
-        unique_values.sort_unstable();
+        unique_values.par_sort_unstable();
 
-        debug!(
-            "enum[{header_string}]: len={}, val={:?}",
-            unique_values.len(),
-            unique_values
-        );
-        unique_values_map.insert(header_string, unique_values);
+        // if log::log_enabled!(log::Level::Debug) {
+        //     // we do this as this debug is relatively expensive
+        //     debug!(
+        //         "enum[{header_string}]: len={}, val={:?}",
+        //         unique_values.len(),
+        //         unique_values
+        //     );
+        // }
+        unique_values_map.insert(header_string, unique_values.clone());
     }
-
     // dbg!(&unique_values_map);
 
     Ok(unique_values_map)
@@ -492,23 +544,19 @@ fn construct_map_of_unique_values(
 #[inline]
 fn convert_to_string(byte_slice: &[u8]) -> CliResult<String> {
     // convert csv header to string
-    let string: String = match std::str::from_utf8(byte_slice) {
-        Ok(s) => s.to_string(),
-        Err(e) => {
-            let lossy_string = String::from_utf8_lossy(byte_slice);
-            let msg =
-                format!("Can't convert byte slice to utf8 string. slice={byte_slice:?}, error={e}: {lossy_string}");
-            error!("{msg}");
-            fail!(msg);
-        }
-    };
-
-    Ok(string)
+    if let Ok(s) = simdutf8::basic::from_utf8(byte_slice) {
+        Ok(s.to_string())
+    } else {
+        let lossy_string = String::from_utf8_lossy(byte_slice);
+        fail_clierror!(
+            "Can't convert byte slice to utf8 string. slice={byte_slice:?}: {lossy_string}"
+        )
+    }
 }
 
 /// determine required fields
 fn get_required_fields(properties_map: &Map<String, Value>) -> Vec<Value> {
-    let mut fields: Vec<Value> = Vec::new();
+    let mut fields: Vec<Value> = Vec::with_capacity(properties_map.len());
 
     // for CSV, all columns in original input file are assume required
     for key in properties_map.keys() {
@@ -520,12 +568,10 @@ fn get_required_fields(properties_map: &Map<String, Value>) -> Vec<Value> {
 
 /// generate map of regex patterns from selected String column of CSV
 fn generate_string_patterns(
-    args: &Args,
+    args: &util::SchemaArgs,
     properties_map: &Map<String, Value>,
 ) -> CliResult<AHashMap<String, String>> {
-    // standard boiler-plate for reading CSV
-
-    let rconfig = Config::new(&args.arg_input)
+    let rconfig = Config::new(args.arg_input.as_ref())
         .delimiter(args.flag_delimiter)
         .no_headers(args.flag_no_headers)
         .select(args.flag_pattern_columns.clone());
@@ -539,57 +585,61 @@ fn generate_string_patterns(
 
     // return empty pattern map when:
     //  * no columns are selected
-    //  * all columns are selected (by default, all columns are selected when no columns are explicitly specified)
-    if sel.len() == 0 || sel.len() == headers.len() {
+    //  * all columns are selected (by default, all columns are selected when no columns are
+    //    explicitly specified)
+    if sel.is_empty() || sel.len() == headers.len() {
         debug!("no pattern columns selected");
         return Ok(pattern_map);
     }
 
     // Map each Header to its unique Set of values
-    let mut unique_values_map: AHashMap<String, HashSet<String>> = AHashMap::new();
+    let mut unique_values_map: AHashMap<String, AHashSet<String>> = AHashMap::new();
 
     #[allow(unused_assignments)]
     let mut record = csv::ByteRecord::new();
+    let mut header_byte_slice: &[u8];
+    let mut header_string: String;
+    let mut value_string: String;
+
     while rdr.read_byte_record(&mut record)? {
         for (i, value_byte_slice) in sel.select(&record).enumerate() {
             // get header based on column index in Selection array
-            let header_byte_slice: &[u8] = headers.get(sel[i]).unwrap();
+            header_byte_slice = headers.get(sel[i]).unwrap();
 
             // convert header and value byte arrays to UTF8 strings
-            let header_string: String = convert_to_string(header_byte_slice)?;
+            header_string = convert_to_string(header_byte_slice)?;
 
             // pattern validation only applies to String type, so skip if not String
             if !should_emit_pattern_constraint(&properties_map[&header_string]) {
                 continue;
             }
 
-            let value_string: String = convert_to_string(value_byte_slice)?;
+            value_string = convert_to_string(value_byte_slice)?;
 
-            let set = unique_values_map
-                .entry(header_string)
-                .or_insert_with(HashSet::<String>::new);
+            let set = unique_values_map.entry(header_string).or_default();
             set.insert(value_string);
         }
     }
 
-    debug!("unique values for eligible pattern columns: {unique_values_map:?}");
+    // build regex pattern for each header
+    pattern_map.reserve(unique_values_map.len());
+    let mut values: Vec<&String>;
+    let mut regexp: String;
 
-    for (header, value_set) in unique_values_map.iter() {
+    for (header, value_set) in &unique_values_map {
         // Convert Set to Vector
-        let values: Vec<&String> = Vec::from_iter(value_set);
+        values = Vec::from_iter(value_set);
 
         // build regex based on unique values
-        let regexp: String = RegExpBuilder::from(&values)
-            .with_conversion_of_digits()
-            .with_conversion_of_words()
+        regexp = RegExpBuilder::from(&values)
             .with_conversion_of_repetitions()
             .with_minimum_repetitions(2)
             .build();
 
-        pattern_map.insert(header.to_owned(), regexp);
+        pattern_map.insert(header.clone(), regexp);
     }
 
-    debug!("pattern map: {pattern_map:?}");
+    // debug!("pattern map: {pattern_map:?}");
 
     Ok(pattern_map)
 }
@@ -597,7 +647,7 @@ fn generate_string_patterns(
 // only emit "pattern" constraint for String fields without enum constraint
 fn should_emit_pattern_constraint(field_def: &Value) -> bool {
     let type_list = field_def[&"type"].as_array().unwrap();
-    let has_enum = field_def.get(&"enum").is_some();
+    let has_enum = field_def.get("enum").is_some();
 
     type_list.contains(&Value::String("string".to_string())) && !has_enum
 }

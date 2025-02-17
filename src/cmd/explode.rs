@@ -1,10 +1,4 @@
-use crate::config::{Config, Delimiter};
-use crate::select::SelectColumns;
-use crate::util;
-use crate::CliResult;
-use serde::Deserialize;
-
-static USAGE: &str = "
+static USAGE: &str = r#"
 Explodes a row into multiple ones by splitting a column value based on the
 given separator.
 
@@ -14,7 +8,7 @@ name,colors
 John,blue|yellow
 Mary,red
 
-Can be exploded on the \"colors\" <column> based on the \"|\" <separator> to:
+Can be exploded on the "colors" <column> based on the "|" <separator> to:
 
 name,colors
 John,blue
@@ -35,40 +29,37 @@ Common options:
                            as headers.
     -d, --delimiter <arg>  The field delimiter for reading CSV data.
                            Must be a single character. (default: ,)
-";
+"#;
 
+use serde::Deserialize;
+
+use crate::{
+    config::{Config, Delimiter},
+    select::SelectColumns,
+    util,
+    util::replace_column_value,
+    CliResult,
+};
 #[derive(Deserialize)]
 struct Args {
-    arg_column: SelectColumns,
-    arg_separator: String,
-    arg_input: Option<String>,
-    flag_rename: Option<String>,
-    flag_output: Option<String>,
+    arg_column:      SelectColumns,
+    arg_separator:   String,
+    arg_input:       Option<String>,
+    flag_rename:     Option<String>,
+    flag_output:     Option<String>,
     flag_no_headers: bool,
-    flag_delimiter: Option<Delimiter>,
-}
-
-pub fn replace_column_value(
-    record: &csv::StringRecord,
-    column_index: usize,
-    new_value: &str,
-) -> csv::StringRecord {
-    record
-        .into_iter()
-        .enumerate()
-        .map(|(i, v)| if i == column_index { new_value } else { v })
-        .collect()
+    flag_delimiter:  Option<Delimiter>,
 }
 
 pub fn run(argv: &[&str]) -> CliResult<()> {
     let args: Args = util::get_args(USAGE, argv)?;
-    let rconfig = Config::new(&args.arg_input)
+    let rconfig = Config::new(args.arg_input.as_ref())
         .delimiter(args.flag_delimiter)
         .no_headers(args.flag_no_headers)
         .select(args.arg_column);
 
     let mut rdr = rconfig.reader()?;
-    let mut wtr = Config::new(&args.flag_output).writer()?;
+    let mut wtr = Config::new(args.flag_output.as_ref()).writer()?;
 
     let headers = rdr.byte_headers()?.clone();
     let sel = rconfig.selection(&headers)?;

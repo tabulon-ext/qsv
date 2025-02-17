@@ -1,14 +1,15 @@
-use std::env;
-use std::fmt;
-use std::fs;
-use std::fs::File;
-use std::io::Write;
-use std::io::{self, Read};
-use std::path::{Path, PathBuf};
-use std::process;
-use std::str::FromStr;
-use std::sync::atomic;
-use std::time::Duration;
+use std::{
+    env, fmt, fs,
+    fs::File,
+    io::{self, Read, Write},
+    path::{Path, PathBuf},
+    process,
+    str::FromStr,
+    sync::atomic,
+    time::Duration,
+};
+
+use uuid::Uuid;
 
 use crate::Csv;
 
@@ -17,9 +18,17 @@ static QSV_INTEGRATION_TEST_DIR: &str = "xit";
 static NEXT_ID: atomic::AtomicUsize = atomic::AtomicUsize::new(0);
 
 pub struct Workdir {
-    root: PathBuf,
-    dir: PathBuf,
+    root:     PathBuf,
+    dir:      PathBuf,
     flexible: bool,
+}
+
+impl Drop for Workdir {
+    fn drop(&mut self) {
+        if let Err(err) = fs::remove_dir_all(&self.dir) {
+            panic!("Could not remove '{:?}': {err}", self.dir);
+        }
+    }
 }
 
 impl Workdir {
@@ -36,9 +45,9 @@ impl Workdir {
         let dir = root
             .join(QSV_INTEGRATION_TEST_DIR)
             .join(name)
-            .join(&format!("test-{}", id));
+            .join(format!("test-{id}-{}", Uuid::new_v4()));
         if let Err(err) = create_dir_all(&dir) {
-            panic!("Could not create '{:?}': {}", dir, err);
+            panic!("Could not create '{dir:?}': {err}");
         }
         Workdir {
             root,
@@ -52,22 +61,25 @@ impl Workdir {
         self
     }
 
+    /// create a file with the default comma delimiter
     pub fn create<T: Csv>(&self, name: &str, rows: T) {
         self.create_with_delim(name, rows, b',')
     }
 
+    /// create a file with the specified delimiter
     pub fn create_with_delim<T: Csv>(&self, name: &str, rows: T, delim: u8) {
         let mut wtr = csv::WriterBuilder::new()
             .flexible(self.flexible)
             .delimiter(delim)
-            .from_path(&self.path(name))
+            .from_path(self.path(name))
             .unwrap();
-        for row in rows.to_vecs().into_iter() {
+        for row in rows.to_vecs() {
             wtr.write_record(row).unwrap();
         }
         wtr.flush().unwrap();
     }
 
+    /// create a file and index it
     pub fn create_indexed<T: Csv>(&self, name: &str, rows: T) {
         self.create(name, rows);
 
@@ -76,6 +88,7 @@ impl Workdir {
         self.run(&mut cmd);
     }
 
+    /// create a file with the specified string data
     pub fn create_from_string(&self, name: &str, data: &str) {
         let filename = &self.path(name);
         let mut file = File::create(filename).unwrap();
@@ -83,10 +96,20 @@ impl Workdir {
         file.flush().unwrap();
     }
 
+    /// read the contents of a file into a string
+    pub fn read_to_string(&self, filename: &str) -> io::Result<String> {
+        let mut file = File::open(self.path(filename))?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        Ok(contents)
+    }
+
+    /// read stdout of a command
     pub fn read_stdout<T: Csv>(&self, cmd: &mut process::Command) -> T {
         let stdout: String = self.stdout(cmd);
         let mut rdr = csv::ReaderBuilder::new()
             .has_headers(false)
+            .flexible(true)
             .from_reader(io::Cursor::new(stdout));
 
         let records: Vec<Vec<String>> = rdr
@@ -94,40 +117,23 @@ impl Workdir {
             .collect::<Result<Vec<csv::StringRecord>, _>>()
             .unwrap()
             .into_iter()
-            .map(|r| r.iter().map(|f| f.to_string()).collect())
+            .map(|r| r.iter().map(std::string::ToString::to_string).collect())
             .collect();
         Csv::from_vecs(records)
     }
 
-    pub fn command(&self, sub_command: &str) -> process::Command {
-        let mut cmd = process::Command::new(&self.qsv_bin());
-        if sub_command.is_empty() {
+    pub fn command(&self, command_str: &str) -> process::Command {
+        let mut cmd = process::Command::new(self.qsv_bin());
+        if command_str.is_empty() {
             cmd.current_dir(&self.dir);
         } else {
-            cmd.current_dir(&self.dir).arg(sub_command);
+            cmd.current_dir(&self.dir).arg(command_str);
         }
         cmd
     }
 
     pub fn output(&self, cmd: &mut process::Command) -> process::Output {
-        debug!("[{}]: {:?}", self.dir.display(), cmd);
-        let o = cmd.output().unwrap();
-        if !o.status.success() {
-            panic!(
-                "\n\n===== {:?} =====\n\
-                    command failed but expected success!\
-                    \n\ncwd: {}\
-                    \n\nstatus: {}\
-                    \n\nstdout: {}\n\nstderr: {}\
-                    \n\n=====\n",
-                cmd,
-                self.dir.display(),
-                o.status,
-                String::from_utf8_lossy(&o.stdout),
-                String::from_utf8_lossy(&o.stderr)
-            )
-        }
-        o
+        cmd.output().unwrap()
     }
 
     pub fn run(&self, cmd: &mut process::Command) {
@@ -141,46 +147,53 @@ impl Workdir {
             .trim_matches(&['\r', '\n'][..])
             .parse()
             .ok()
-            .unwrap_or_else(|| panic!("Could not convert from string: '{}'", stdout))
+            .unwrap_or_else(|| panic!("Could not convert from string: '{stdout}'"))
     }
 
     pub fn output_stderr(&self, cmd: &mut process::Command) -> String {
-        debug!("[{}]: {:?}", self.dir.display(), cmd);
-        // ensures stderr has been flushed before we run our cmd
         {
+            // ensures stderr has been flushed before we run our cmd
             let mut _stderr = io::stderr();
             _stderr.flush().unwrap();
         }
         let o = cmd.output().unwrap();
         let o_utf8 = String::from_utf8_lossy(&o.stderr).to_string();
-        if !o.status.success() {
-            o_utf8
-        } else if o.status.success() && !o_utf8.is_empty() {
+        if !o.status.success() || !o_utf8.is_empty() {
             o_utf8
         } else {
             "No error".to_string()
         }
     }
 
-    pub fn assert_err(&self, cmd: &mut process::Command) {
+    pub fn assert_success(&self, cmd: &mut process::Command) {
         let o = cmd.output().unwrap();
-        if o.status.success() {
-            panic!(
-                "\n\n===== {:?} =====\n\
-                    command succeeded but expected failure!\
-                    \n\ncwd: {}\
-                    \n\nstatus: {}\
-                    \n\nstdout: {}\n\nstderr: {}\
-                    \n\n=====\n",
-                cmd,
-                self.dir.display(),
-                o.status,
-                String::from_utf8_lossy(&o.stdout),
-                String::from_utf8_lossy(&o.stderr)
-            );
-        }
+        assert!(
+            o.status.success(),
+            "\n\n===== {:?} =====\ncommand failed but expected success!\n\ncwd: {}\n\nstatus: \
+             {}\n\nstdout: {}\n\nstderr: {}\n\n=====\n",
+            cmd,
+            self.dir.display(),
+            o.status,
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
     }
 
+    pub fn assert_err(&self, cmd: &mut process::Command) {
+        let o = cmd.output().unwrap();
+        assert!(
+            !o.status.success(),
+            "\n\n===== {:?} =====\ncommand succeeded but expected failure!\n\ncwd: {}\n\nstatus: \
+             {}\n\nstdout: {}\n\nstderr: {}\n\n=====\n",
+            cmd,
+            self.dir.display(),
+            o.status,
+            String::from_utf8_lossy(&o.stdout),
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+
+    /// returns contents of specified file in resources/test directory
     pub fn load_test_resource(&self, filename: &str) -> String {
         // locate resources/test relative to crate base dir
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -190,17 +203,28 @@ impl Workdir {
         self.from_str::<String>(path.as_path())
     }
 
+    /// copy the file in resources/test directory to the working directory
+    /// returns absolute file path of the copied file
     pub fn load_test_file(&self, filename: &str) -> String {
         // locate resources/test relative to crate base dir
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.push("resources/test/");
         path.push(filename);
 
-        path.into_os_string().into_string().unwrap()
+        let resource_file_path = path.into_os_string().into_string().unwrap();
+
+        let mut wrkdir_path = self.dir.clone();
+        wrkdir_path.push(filename);
+
+        fs::copy(resource_file_path, wrkdir_path.clone()).unwrap();
+
+        wrkdir_path.into_os_string().into_string().unwrap()
     }
 
     #[allow(clippy::wrong_self_convention)]
+    /// returns the contents of the file
     pub fn from_str<T: FromStr>(&self, name: &Path) -> T {
+        log::debug!("reading file: {name:?}");
         let mut o = String::new();
         fs::File::open(name)
             .unwrap()
@@ -209,20 +233,52 @@ impl Workdir {
         o.parse().ok().expect("fromstr")
     }
 
+    /// returns the path to the given filename in the working directory
     pub fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
     }
 
+    #[cfg(feature = "feature_capable")]
     pub fn qsv_bin(&self) -> PathBuf {
         self.root.join("qsv")
     }
 
-    // clear all files in directory
+    #[cfg(feature = "lite")]
+    pub fn qsv_bin(&self) -> PathBuf {
+        self.root.join("qsvlite")
+    }
+
+    #[cfg(feature = "datapusher_plus")]
+    pub fn qsv_bin(&self) -> PathBuf {
+        self.root.join("qsvdp")
+    }
+
+    /// clear all files in directory
     pub fn clear_contents(&self) -> io::Result<()> {
         for entry in fs::read_dir(&self.dir)? {
             fs::remove_file(entry?.path())?;
         }
         Ok(())
+    }
+
+    // create a subdirectory
+    pub fn create_subdir(&self, name: &str) -> io::Result<()> {
+        let mut path = self.dir.clone();
+        path.push(name);
+        create_dir_all(path)
+    }
+
+    /// Read a CSV file and parse it into Vec<Vec<String>>
+    /// Note that this does not return the header row
+    pub fn read_csv(&self, name: &str) -> Vec<Vec<String>> {
+        let path = self.path(name);
+        let mut rdr = csv::ReaderBuilder::new()
+            .flexible(self.flexible)
+            .from_path(&path)
+            .unwrap();
+        rdr.records()
+            .map(|r| r.unwrap().iter().map(|s| s.to_string()).collect())
+            .collect()
     }
 }
 
@@ -232,7 +288,7 @@ impl fmt::Debug for Workdir {
     }
 }
 
-// For whatever reason, `fs::create_dir_all` fails intermittently on Travis
+// For whatever reason, `fs::create_dir_all` fails intermittently on CI
 // with a weird "file exists" error. Despite my best efforts to get to the
 // bottom of it, I've decided a try-wait-and-retry hack is good enough.
 fn create_dir_all<P: AsRef<Path>>(p: P) -> io::Result<()> {
@@ -246,4 +302,30 @@ fn create_dir_all<P: AsRef<Path>>(p: P) -> io::Result<()> {
         }
     }
     Err(last_err.unwrap())
+}
+
+#[cfg(all(feature = "to", feature = "feature_capable"))]
+pub fn is_same_file(file1: &Path, file2: &Path) -> Result<bool, std::io::Error> {
+    use std::io::BufReader;
+
+    let f1 = File::open(file1)?;
+    let f2 = File::open(file2)?;
+
+    // Check if file sizes are different
+    if f1.metadata().unwrap().len() != f2.metadata().unwrap().len() {
+        return Ok(false);
+    }
+
+    // Use buf readers since they are much faster
+    let f1 = BufReader::new(f1);
+    let f2 = BufReader::new(f2);
+
+    // Do a byte to byte comparison of the two files
+    for (b1, b2) in f1.bytes().zip(f2.bytes()) {
+        if b1.unwrap() != b2.unwrap() {
+            return Ok(false);
+        }
+    }
+
+    return Ok(true);
 }

@@ -1,15 +1,4 @@
-use ahash::AHashMap;
-use std::io;
-use std::iter;
-use std::ops;
-
-use crate::config::{Config, Delimiter};
-use crate::select::{SelectColumns, Selection};
-use crate::util;
-use crate::CliResult;
-use serde::Deserialize;
-
-static USAGE: &str = "
+static USAGE: &str = r#"
 Fill empty fields in selected columns of a CSV.
 
 This command fills empty fields in the selected column
@@ -40,6 +29,8 @@ CSV is not sorted by the `--groupby` columns, rows may be
 re-ordered during output due to the buffering of rows
 collected before the first valid value.
 
+For examples, see https://github.com/dathere/qsv/blob/master/tests/test_fill.rs.
+
 Usage:
     qsv fill [options] [--] <selection> [<input>]
     qsv fill --help
@@ -58,35 +49,46 @@ Common options:
                            sliced, etc.)
     -d, --delimiter <arg>  The field delimiter for reading CSV data.
                            Must be a single character. (default: ,)
-";
+"#;
 
-type ByteString = Vec<u8>;
+use std::{io, iter, ops};
+
+use ahash::AHashMap;
+use serde::Deserialize;
+
+use crate::{
+    config::{Config, Delimiter},
+    select::{SelectColumns, Selection},
+    util,
+    util::ByteString,
+    CliResult,
+};
 
 type BoxedWriter = csv::Writer<Box<dyn io::Write + 'static>>;
-type BoxedReader = csv::Reader<Box<dyn io::Read + 'static>>;
+type BoxedReader = csv::Reader<Box<dyn io::Read + Send + 'static>>;
 
 #[derive(Deserialize)]
 struct Args {
-    arg_input: Option<String>,
-    arg_selection: SelectColumns,
-    flag_output: Option<String>,
+    arg_input:       Option<String>,
+    arg_selection:   SelectColumns,
+    flag_output:     Option<String>,
     flag_no_headers: bool,
-    flag_delimiter: Option<Delimiter>,
-    flag_groupby: Option<SelectColumns>,
-    flag_first: bool,
-    flag_backfill: bool,
-    flag_default: Option<String>,
+    flag_delimiter:  Option<Delimiter>,
+    flag_groupby:    Option<SelectColumns>,
+    flag_first:      bool,
+    flag_backfill:   bool,
+    flag_default:    Option<String>,
 }
 
 pub fn run(argv: &[&str]) -> CliResult<()> {
     let args: Args = util::get_args(USAGE, argv)?;
 
-    let rconfig = Config::new(&args.arg_input)
+    let rconfig = Config::new(args.arg_input.as_ref())
         .delimiter(args.flag_delimiter)
         .no_headers(args.flag_no_headers)
         .select(args.arg_selection);
 
-    let wconfig = Config::new(&args.flag_output);
+    let wconfig = Config::new(args.flag_output.as_ref());
 
     let mut rdr = rconfig.reader()?;
     let mut wtr = wconfig.writer()?;
@@ -114,7 +116,7 @@ struct ByteRecord(Vec<ByteString>);
 
 impl<'a> From<&'a csv::ByteRecord> for ByteRecord {
     fn from(record: &'a csv::ByteRecord) -> Self {
-        ByteRecord(record.iter().map(|f| f.to_vec()).collect())
+        ByteRecord(record.iter().map(<[u8]>::to_vec).collect())
     }
 }
 
@@ -125,8 +127,9 @@ impl iter::FromIterator<ByteString> for ByteRecord {
 }
 
 impl iter::IntoIterator for ByteRecord {
-    type Item = ByteString;
     type IntoIter = ::std::vec::IntoIter<ByteString>;
+    type Item = ByteString;
+
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
     }
@@ -134,6 +137,7 @@ impl iter::IntoIterator for ByteRecord {
 
 impl ops::Deref for ByteRecord {
     type Target = [ByteString];
+
     fn deref(&self) -> &[ByteString] {
         &self.0
     }
@@ -159,7 +163,7 @@ impl GroupKeyConstructor for GroupKeySelection {
 
 #[derive(Debug)]
 struct GroupValues {
-    map: AHashMap<usize, ByteString>,
+    map:     AHashMap<usize, ByteString>,
     default: Option<ByteString>,
 }
 
@@ -214,12 +218,12 @@ impl GroupMemorizer for GroupValues {
 }
 
 struct Filler {
-    grouper: Grouper,
-    groupby: GroupKeySelection,
-    select: Selection,
-    buffer: GroupBuffer,
-    first: bool,
-    backfill: bool,
+    grouper:       Grouper,
+    groupby:       GroupKeySelection,
+    select:        Selection,
+    buffer:        GroupBuffer,
+    first:         bool,
+    backfill:      bool,
     default_value: Option<ByteString>,
 }
 
@@ -236,12 +240,12 @@ impl Filler {
         }
     }
 
-    fn use_first_value(mut self, first: bool) -> Self {
+    const fn use_first_value(mut self, first: bool) -> Self {
         self.first = first;
         self
     }
 
-    fn backfill_empty_values(mut self, backfill: bool) -> Self {
+    const fn backfill_empty_values(mut self, backfill: bool) -> Self {
         self.backfill = backfill;
         self
     }
@@ -266,19 +270,16 @@ impl Filler {
                 .or_insert_with(|| GroupValues::new(default_value));
 
             match (self.default_value.is_some(), self.first) {
-                (true, _) => {}
+                (true, _) => {},
                 (false, true) => group.memorize_first(&self.select, &record),
                 (false, false) => group.memorize(&self.select, &record),
-            };
+            }
 
             let row = group.fill(&self.select, ByteRecord::from(&record));
 
             // Handle buffering rows which still have nulls.
             if self.backfill && (self.select.iter().any(|&i| row[i] == b"")) {
-                self.buffer
-                    .entry(key.clone())
-                    .or_insert_with(Vec::new)
-                    .push(row);
+                self.buffer.entry(key.clone()).or_default().push(row);
             } else {
                 if let Some(rows) = self.buffer.remove(&key) {
                     for buffered_row in rows {
@@ -303,11 +304,11 @@ impl Filler {
 }
 
 struct MapSelected<I, F> {
-    selection: Vec<usize>,
+    selection:       Vec<usize>,
     selection_index: usize,
-    index: usize,
-    iterator: I,
-    predicate: F,
+    index:           usize,
+    iterator:        I,
+    predicate:       F,
 }
 
 impl<I: iter::Iterator, F> iter::Iterator for MapSelected<I, F>
@@ -317,15 +318,12 @@ where
     type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let item = match self.iterator.next() {
-            Some(item) => item,
-            None => return None,
-        };
+        let item = self.iterator.next()?;
         let result = match self.selection_index {
             ref mut sidx if (self.selection.get(*sidx) == Some(&self.index)) => {
                 *sidx += 1;
                 Some((self.predicate)(item))
-            }
+            },
             _ => Some(item),
         };
         self.index += 1;

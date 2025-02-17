@@ -17,9 +17,6 @@
       "maxLength": 55,
       "type": [
         "string"
-      ],
-      "enum": [
-        "http://opendatacommunities.org/id/district-council/adur"
       ]
     },
     "OrganisationLabel": {
@@ -41,9 +38,6 @@
       "maxLength": 32,
       "type": [
         "string"
-      ],
-      "enum": [
-        "http://id.esd.org.uk/service/579"
       ]
     },
     "ServiceTypeLabel": {
@@ -52,9 +46,6 @@
       "maxLength": 14,
       "type": [
         "string"
-      ],
-      "enum": [
-        "Public toilets"
       ]
     },
     "LocationText": {
@@ -98,6 +89,23 @@
       "maximum": 524401,
       "type": [
         "integer"
+      ],
+      "enum": [
+        518072,
+        518222,
+        518225,
+        518915,
+        520354,
+        521048,
+        521299,
+        521440,
+        521515,
+        522007,
+        522083,
+        522118,
+        523294,
+        524375,
+        524401
       ]
     },
     "GeoY": {
@@ -106,6 +114,23 @@
       "maximum": 106062,
       "type": [
         "integer"
+      ],
+      "enum": [
+        103649,
+        103795,
+        104168,
+        104246,
+        104515,
+        104588,
+        104730,
+        104753,
+        104977,
+        105083,
+        105168,
+        105405,
+        105725,
+        105939,
+        106062
       ]
     },
     "GeoPointLicensingURL": {
@@ -114,9 +139,6 @@
       "maxLength": 124,
       "type": [
         "string"
-      ],
-      "enum": [
-        "http://www.ordnancesurvey.co.uk/business-and-government/help-and-support/public-sector/guidance/derived-data-exemptions.html"
       ]
     },
     "Category": {
@@ -161,9 +183,6 @@
       "maxLength": 2,
       "type": [
         "string"
-      ],
-      "enum": [
-        "No"
       ]
     },
     "FamilyToilet": {
@@ -172,9 +191,6 @@
       "maxLength": 2,
       "type": [
         "string"
-      ],
-      "enum": [
-        "No"
       ]
     },
     "ChangingPlace": {
@@ -183,9 +199,6 @@
       "maxLength": 2,
       "type": [
         "string"
-      ],
-      "enum": [
-        "No"
       ]
     },
     "AutomaticPublicConvenience": {
@@ -194,9 +207,6 @@
       "maxLength": 2,
       "type": [
         "string"
-      ],
-      "enum": [
-        "No"
       ]
     },
     "FullTimeStaffing": {
@@ -205,9 +215,6 @@
       "maxLength": 2,
       "type": [
         "string"
-      ],
-      "enum": [
-        "No"
       ]
     },
     "PartOfCommunityScheme": {
@@ -216,9 +223,6 @@
       "maxLength": 2,
       "type": [
         "string"
-      ],
-      "enum": [
-        "No"
       ]
     },
     "CommunitySchemeName": {
@@ -239,9 +243,6 @@
       "maxLength": 66,
       "type": [
         "string"
-      ],
-      "enum": [
-        "http://www.adur-worthing.gov.uk/streets-and-travel/public-toilets/"
       ]
     },
     "OpeningHours": {
@@ -304,9 +305,6 @@
       "maxLength": 12,
       "type": [
         "string"
-      ],
-      "enum": [
-        "01903 221471"
       ]
     },
     "Notes": {
@@ -328,6 +326,23 @@
       "maximum": 60034215,
       "type": [
         "integer"
+      ],
+      "enum": [
+        60001449,
+        60002210,
+        60007428,
+        60008859,
+        60009402,
+        60009666,
+        60011970,
+        60014163,
+        60014340,
+        60017866,
+        60026354,
+        60028994,
+        60029181,
+        60032527,
+        60034215
       ]
     },
     "Postcode": {

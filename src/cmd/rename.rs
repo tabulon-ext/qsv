@@ -1,23 +1,34 @@
-use crate::config::{Config, Delimiter};
-use crate::util;
-use crate::CliResult;
-use serde::Deserialize;
+static USAGE: &str = r#"
+Rename the columns of a CSV efficiently.
 
-static USAGE: &str = "
-Rename the columns of CSV data efficiently.
+The new column names are given as a comma-separated list of names.
+The number of column names given must match the number of columns in the
+CSV unless "_all_generic" is used.
 
-This command lets you rename the columns in CSV data. You must specify
-all of the headers, and separate them by a comma.
+  Change the column names of a CSV with three columns:
+    $ qsv rename id,name,title
 
-  Change the name of the columns:
-  $ qsv rename id,name,title
+  Replace the column names with generic ones (_col_N):
+    $ qsv rename _all_generic
+
+  Add generic column names to a CSV with no headers:
+    $ qsv rename _all_generic --no-headers
 
   Use column names that contains commas and conflict with the separator:
-  $ qsv rename '\"Date - Opening\",\"Date - Actual Closing\"'
+    $ qsv rename '"Date - Opening","Date - Actual Closing"'
+
+For more examples, see https://github.com/dathere/qsv/blob/master/tests/test_rename.rs.
 
 Usage:
     qsv rename [options] [--] <headers> [<input>]
     qsv rename --help
+
+rename arguments:
+    <headers>              The new headers to use for the CSV.
+                           Separate multiple headers with a comma.
+                           If "_all_generic" is given, the headers will be renamed
+                           to generic column names, where the column name uses
+                           the format "_col_N" where N is the 1-based column index.
 
 Common options:
     -h, --help             Display this message
@@ -25,33 +36,48 @@ Common options:
     -n, --no-headers       When set, the header will be inserted on top.    
     -d, --delimiter <arg>  The field delimiter for reading CSV data.
                            Must be a single character. (default: ,)
-";
+"#;
+
+use serde::Deserialize;
+
+use crate::{
+    config::{Config, Delimiter},
+    util, CliResult,
+};
 
 #[derive(Deserialize)]
 struct Args {
-    arg_input: Option<String>,
-    arg_headers: String,
-    flag_output: Option<String>,
+    arg_input:       Option<String>,
+    arg_headers:     String,
+    flag_output:     Option<String>,
     flag_no_headers: bool,
-    flag_delimiter: Option<Delimiter>,
+    flag_delimiter:  Option<Delimiter>,
 }
 
 pub fn run(argv: &[&str]) -> CliResult<()> {
-    let args: Args = util::get_args(USAGE, argv)?;
+    let mut args: Args = util::get_args(USAGE, argv)?;
 
-    let rconfig = Config::new(&args.arg_input)
+    let rconfig = Config::new(args.arg_input.as_ref())
         .delimiter(args.flag_delimiter)
         .no_headers(args.flag_no_headers);
 
     let mut rdr = rconfig.reader()?;
-    let mut wtr = Config::new(&args.flag_output).writer()?;
+    let mut wtr = Config::new(args.flag_output.as_ref()).writer()?;
     let headers = rdr.byte_headers()?;
+
+    if args.arg_headers.to_lowercase() == "_all_generic" {
+        args.arg_headers = rename_headers_all_generic(headers.len());
+    }
 
     let mut new_rdr = csv::Reader::from_reader(args.arg_headers.as_bytes());
     let new_headers = new_rdr.byte_headers()?;
 
     if headers.len() != new_headers.len() {
-        return fail!("The length of the CSV headers is different from the provided one.");
+        return fail_incorrectusage_clierror!(
+            "The length of the CSV headers ({}) is different from the provided one ({}).",
+            headers.len(),
+            new_headers.len()
+        );
     }
 
     wtr.write_record(new_headers)?;
@@ -60,6 +86,21 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
     while rdr.read_byte_record(&mut record)? {
         wtr.write_record(&record)?;
     }
-    wtr.flush()?;
-    Ok(())
+    Ok(wtr.flush()?)
+}
+
+pub fn rename_headers_all_generic(num_of_cols: usize) -> String {
+    use std::fmt::Write;
+
+    // we pre-allocate a string with a capacity of 7 characters per column name
+    // this is a rough estimate, and should be more than enough
+    let mut result = String::with_capacity(num_of_cols * 7);
+    for i in 1..=num_of_cols {
+        if i > 1 {
+            result.push(',');
+        }
+        // safety: safe to unwrap as we're just using it to append to result string
+        write!(result, "_col_{i}").unwrap();
+    }
+    result
 }

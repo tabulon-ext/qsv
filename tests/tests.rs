@@ -1,4 +1,3 @@
-#[macro_use]
 extern crate log;
 extern crate serde;
 
@@ -8,13 +7,10 @@ extern crate quickcheck;
 extern crate rand;
 extern crate stats;
 
-use std::env;
-use std::fmt;
-use std::mem::transmute;
-use std::ops;
+use std::{env, fmt, mem::transmute, ops};
 
 use quickcheck::{Arbitrary, Gen, QuickCheck, Testable};
-use rand::{thread_rng, Rng};
+use rand::Rng;
 
 macro_rules! svec[
     ($($x:expr),*) => (
@@ -34,52 +30,105 @@ macro_rules! rassert_eq {
 
 mod workdir;
 
+mod test_100;
 #[cfg(feature = "apply")]
 mod test_apply;
+#[cfg(feature = "datapusher_plus")]
+mod test_applydp;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_behead;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_cat;
+#[cfg(all(
+    any(feature = "feature_capable"),
+    any(target_os = "windows", target_os = "macos"),
+    feature = "clipboard",
+))]
+mod test_clipboard;
 mod test_combos;
 mod test_comments;
 mod test_count;
+mod test_datefmt;
 mod test_dedup;
+mod test_describegpt;
+mod test_diff;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
+mod test_edit;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_enumerate;
 mod test_excel;
 mod test_exclude;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_explode;
+mod test_extdedup;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_extsort;
 #[cfg(feature = "fetch")]
 mod test_fetch;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_fill;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_fixlengths;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_flatten;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_fmt;
-#[cfg(all(feature = "foreach", target_family = "unix"))]
+#[cfg(all(feature = "foreach"))]
 mod test_foreach;
 mod test_frequency;
+#[cfg(all(feature = "feature_capable", feature = "geocode"))]
+mod test_geocode;
 mod test_headers;
 mod test_index;
+mod test_input;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_join;
+#[cfg(feature = "polars")]
+mod test_joinp;
+#[cfg(not(feature = "datapusher_plus"))]
+mod test_json;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_jsonl;
-#[cfg(feature = "lua")]
-mod test_lua;
+#[cfg(feature = "luau")]
+mod test_luau;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_partition;
+#[cfg(feature = "polars")]
+mod test_pivotp;
+#[cfg(feature = "prompt")]
+mod test_prompt;
 mod test_pseudo;
 #[cfg(feature = "python")]
 mod test_py;
 mod test_rename;
 mod test_replace;
 mod test_reverse;
+mod test_safenames;
 mod test_sample;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_schema;
 mod test_search;
 mod test_searchset;
 mod test_select;
 mod test_slice;
+mod test_snappy;
 mod test_sniff;
 mod test_sort;
+mod test_sortcheck;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_split;
+#[cfg(feature = "polars")]
+mod test_sqlp;
 mod test_stats;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_table;
+#[cfg(feature = "feature_capable")]
+mod test_template;
+#[cfg(all(feature = "to", feature = "feature_capable"))]
+mod test_to;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
+mod test_tojsonl;
+#[cfg(any(feature = "feature_capable", feature = "lite"))]
 mod test_transpose;
 mod test_validate;
 
@@ -106,6 +155,7 @@ impl Csv for CsvVecs {
     fn to_vecs(self) -> CsvVecs {
         self
     }
+
     fn from_vecs(vecs: CsvVecs) -> CsvVecs {
         vecs
     }
@@ -124,22 +174,23 @@ impl CsvRecord {
 #[allow(clippy::needless_lifetimes)]
 impl ops::Deref for CsvRecord {
     type Target = [String];
+
     fn deref<'a>(&'a self) -> &'a [String] {
-        &*self.0
+        &self.0
     }
 }
 
 #[allow(clippy::needless_lifetimes)]
 impl ops::DerefMut for CsvRecord {
     fn deref_mut<'a>(&'a mut self) -> &'a mut [String] {
-        &mut *self.0
+        &mut self.0
     }
 }
 
 impl fmt::Debug for CsvRecord {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let bytes: Vec<_> = self.iter().map(|s| s.as_bytes()).collect();
-        write!(f, "{:?}", bytes)
+        let bytes: Vec<_> = self.iter().map(std::string::String::as_bytes).collect();
+        write!(f, "{bytes:?}")
     }
 }
 
@@ -164,6 +215,7 @@ impl Csv for Vec<CsvRecord> {
     fn to_vecs(self) -> CsvVecs {
         unsafe { transmute(self) }
     }
+
     fn from_vecs(vecs: CsvVecs) -> Vec<CsvRecord> {
         unsafe { transmute(vecs) }
     }
@@ -180,7 +232,7 @@ impl CsvData {
     }
 
     fn len(&self) -> usize {
-        (&**self).len()
+        (**self).len()
     }
 
     fn is_empty(&self) -> bool {
@@ -191,17 +243,18 @@ impl CsvData {
 #[allow(clippy::needless_lifetimes)]
 impl ops::Deref for CsvData {
     type Target = [CsvRecord];
+
     fn deref<'a>(&'a self) -> &'a [CsvRecord] {
-        &*self.data
+        &self.data
     }
 }
 
 impl Arbitrary for CsvData {
     fn arbitrary(g: &mut Gen) -> CsvData {
         let record_len = g.size();
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
 
-        let num_records: usize = rng.gen_range(0..100);
+        let num_records: usize = rng.random_range(0..100);
         let mut d = CsvData {
             data: (0..num_records)
                 .map(|_| CsvRecord((0..record_len).map(|_| Arbitrary::arbitrary(g)).collect()))
@@ -244,6 +297,7 @@ impl Csv for CsvData {
     fn to_vecs(self) -> CsvVecs {
         unsafe { transmute(self.data) }
     }
+
     fn from_vecs(vecs: CsvVecs) -> CsvData {
         CsvData {
             data: unsafe { transmute(vecs) },

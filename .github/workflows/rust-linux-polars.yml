@@ -1,0 +1,28 @@
+name: Linux - Polars
+
+on:
+  # push:
+  #   branches: [ master ]
+  # pull_request:
+  #   branches: [ master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-linux-polars-tests-${{ github.ref }}-1
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4        
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Run tests
+      # env:
+        # RUSTFLAGS: -C target-feature=+fxsr,+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+avx,+fma
+      run: cargo test --verbose --locked --features=polars,feature_capable

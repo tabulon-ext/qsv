@@ -1,58 +1,88 @@
-use ahash::AHashMap;
-use std::collections::hash_map::Entry;
-use std::collections::HashSet;
-use std::fs;
-use std::io;
-use std::path::Path;
+static USAGE: &str = r#"
+Partitions the given CSV data into chunks based on the value of a column.
 
-use regex::Regex;
-
-use crate::config::{Config, Delimiter};
-use crate::select::SelectColumns;
-use crate::util::{self, FilenameTemplate};
-use crate::CliResult;
-use serde::Deserialize;
-
-static USAGE: &str = "
-Partitions the given CSV data into chunks based on the value of a column
+See `split` command to split a CSV data by row count, by number of chunks or
+by kb-size.
 
 The files are written to the output directory with filenames based on the
 values in the partition column and the `--filename` flag.
+
+EXAMPLE:
+
+Partition nyc311.csv file into separate files based on the value of the
+"Borough" column in the current directory:
+    $ qsv partition Borough . --filename "nyc311-{}.csv" nyc311.csv
+
+will create the following files, each containing the data for each borough:
+    nyc311-Bronx.csv
+    nyc311-Brooklyn.csv
+    nyc311-Manhattan.csv
+    nyc311-Queens.csv
+    nyc311-Staten_Island.csv
+
+For more examples, see https://github.com/dathere/qsv/blob/master/tests/test_partition.rs.
 
 Usage:
     qsv partition [options] <column> <outdir> [<input>]
     qsv partition --help
 
+partition arguments:
+    <column>                 The column to use as a key for partitioning.
+                             You can use the `--select` option to select
+                             the column by name or index, but only one
+                             column can be used for partitioning.
+                             See `select` command for more details.
+    <outdir>                 The directory to write the output files to.
+    <input>                  The CSV file to read from. If not specified, then
+                             the input will be read from stdin.
+
 partition options:
-    --filename <filename>  A filename template to use when constructing
-                           the names of the output files.  The string '{}'
-                           will be replaced by a value based on the value
-                           of the field, but sanitized for shell safety.
-                           [default: {}.csv]
+    --filename <filename>    A filename template to use when constructing the
+                             names of the output files.  The string '{}' will
+                             be replaced by a value based on the partition column,
+                             but sanitized for shell safety.
+                             [default: {}.csv]
     -p, --prefix-length <n>  Truncate the partition column after the
-                           specified number of bytes when creating the
-                           output file.
-    --drop                 Drop the partition column from results.
+                             specified number of bytes when creating the
+                             output file.
+    --drop                   Drop the partition column from results.
 
 Common options:
-    -h, --help             Display this message
-    -n, --no-headers       When set, the first row will NOT be interpreted
-                           as column names. Otherwise, the first row will
-                           appear in all chunks as the header row.
-    -d, --delimiter <arg>  The field delimiter for reading CSV data.
-                           Must be a single character. (default: ,)
-";
+    -h, --help               Display this message
+    -n, --no-headers         When set, the first row will NOT be interpreted
+                             as column names. Otherwise, the first row will
+                             appear in all chunks as the header row.
+    -d, --delimiter <arg>    The field delimiter for reading CSV data.
+                             Must be a single character. (default: ,)
+"#;
+
+use std::{
+    collections::{hash_map::Entry, HashSet},
+    fs, io,
+    path::Path,
+};
+
+use ahash::AHashMap;
+use regex::Regex;
+use serde::Deserialize;
+
+use crate::{
+    config::{Config, Delimiter},
+    select::SelectColumns,
+    util::{self, FilenameTemplate},
+    CliResult,
+};
 
 #[derive(Clone, Deserialize)]
 struct Args {
-    arg_column: SelectColumns,
-    arg_input: Option<String>,
-    arg_outdir: String,
-    flag_filename: FilenameTemplate,
+    arg_column:         SelectColumns,
+    arg_input:          Option<String>,
+    arg_outdir:         String,
+    flag_filename:      FilenameTemplate,
     flag_prefix_length: Option<usize>,
-    flag_drop: bool,
-    flag_no_headers: bool,
-    flag_delimiter: Option<Delimiter>,
+    flag_drop:          bool,
+    flag_no_headers:    bool,
+    flag_delimiter:     Option<Delimiter>,
 }
 
 pub fn run(argv: &[&str]) -> CliResult<()> {
@@ -69,13 +99,14 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
 impl Args {
     /// Configuration for our reader.
     fn rconfig(&self) -> Config {
-        Config::new(&self.arg_input)
+        Config::new(self.arg_input.as_ref())
             .delimiter(self.flag_delimiter)
             .no_headers(self.flag_no_headers)
             .select(self.arg_column.clone())
     }
 
     /// Get the column to use as a key.
+    #[allow(clippy::unused_self)]
     fn key_column(&self, rconfig: &Config, headers: &csv::ByteRecord) -> CliResult<usize> {
         let select_cols = rconfig.selection(headers)?;
         if select_cols.len() == 1 {
@@ -113,14 +144,14 @@ impl Args {
                         if !rconfig.no_headers {
                             if self.flag_drop {
                                 wtr.write_record(headers.iter().enumerate().filter_map(
-                                    |(i, e)| if i != key_col { Some(e) } else { None },
+                                    |(i, e)| if i == key_col { None } else { Some(e) },
                                 ))?;
                             } else {
                                 wtr.write_record(&headers)?;
                             }
                         }
                         vacant.insert(wtr)
-                    }
+                    },
                 };
             if self.flag_drop {
                 wtr.write_record(row.iter().enumerate().filter_map(|(i, e)| {
@@ -133,6 +164,7 @@ impl Args {
             } else {
                 wtr.write_byte_record(&row)?;
             }
+            wtr.flush()?;
         }
         Ok(())
     }
@@ -142,9 +174,9 @@ type BoxedWriter = csv::Writer<Box<dyn io::Write + 'static>>;
 
 /// Generates unique filenames based on CSV values.
 struct WriterGenerator {
-    template: FilenameTemplate,
-    counter: usize,
-    used: HashSet<String>,
+    template:      FilenameTemplate,
+    counter:       usize,
+    used:          HashSet<String>,
     non_word_char: Regex,
 }
 
@@ -173,7 +205,7 @@ impl WriterGenerator {
     fn unique_value(&mut self, key: &[u8]) -> String {
         // Sanitize our key.
         let utf8 = String::from_utf8_lossy(key);
-        let safe = self.non_word_char.replace_all(&*utf8, "").into_owned();
+        let safe = self.non_word_char.replace_all(&utf8, "").into_owned();
         let base = if safe.is_empty() {
             "empty".to_owned()
         } else {
@@ -181,10 +213,7 @@ impl WriterGenerator {
         };
 
         // Now check for collisions.
-        if !self.used.contains(&base) {
-            self.used.insert(base.clone());
-            base
-        } else {
+        if self.used.contains(&base) {
             loop {
                 let candidate = format!("{}_{}", &base, self.counter);
                 self.counter = self.counter.checked_add(1).unwrap_or_else(|| {
@@ -198,6 +227,9 @@ impl WriterGenerator {
                     return candidate;
                 }
             }
+        } else {
+            self.used.insert(base.clone());
+            base
         }
     }
 }

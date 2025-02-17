@@ -1,26 +1,10 @@
-use ahash::AHashMap;
-use std::collections::hash_map::Entry;
-use std::fmt;
-use std::fs;
-use std::io;
-use std::str;
-
-use byteorder::{BigEndian, WriteBytesExt};
-
-use crate::config::{Config, Delimiter};
-use crate::index::Indexed;
-use crate::select::{SelectColumns, Selection};
-use crate::util;
-use crate::CliResult;
-use serde::Deserialize;
-
-static USAGE: &str = "
+static USAGE: &str = r#"
 Removes a set of CSV data from another set based on the specified columns.
 
 Also can compute the intersection of two CSV sets with the -v flag.
 
 Matching is always done by ignoring leading and trailing whitespace. By default,
-matching is done case sensitively, but this can be disabled with the --no-case
+matching is done case sensitively, but this can be disabled with the --ignore-case
 flag.
 
 The columns arguments specify the columns to match for each input. Columns can
@@ -29,12 +13,33 @@ separating them with a comma. Specify a range of columns with `-`. Both
 columns1 and columns2 must specify exactly the same number of columns.
 (See 'qsv select --help' for the full syntax.)
 
+Examples:
+
+    qsv exclude id records.csv id previously-processed.csv
+    qsv exclude col1,col2 records.csv col1,col2 previously-processed.csv
+    qsv exclude col1-col5 records.csv col1-col5 previously-processed.csv
+    qsv exclude id records.csv id previously-processed.csv > new-records.csv
+    qsv exclude id records.csv id previously-processed.csv --output new-records.csv
+    qsv exclude -v id records.csv id previously-processed.csv -o intersection.csv
+    qsv exclude --ignore-case id records.csv id previously-processed.csv
+    qsv exclude id records.csv id previously-processed.csv |
+       qsv sort > new-sorted-records.csv
+    qsv exclude id records.csv id previously-processed.csv | qsv sort |
+       qsv --sorted dedup > new-sorted-deduped-records.csv
+
+For more examples, see https://github.com/dathere/qsv/blob/master/tests/test_exclude.rs.
+
 Usage:
     qsv exclude [options] <columns1> <input1> <columns2> <input2>
     qsv exclude --help
 
+input arguments:
+    <input1> is the file from which data will be removed.
+    <input2> is the file containing the data to be removed from <input1> 
+     e.g. 'qsv exclude id records.csv id previously-processed.csv'
+
 exclude options:
-    --no-case              When set, matching is done case insensitively.
+    -i, --ignore-case      When set, matching is done case insensitively.
     -v                     When set, matching rows will be the only ones included,
                            forming set intersection, instead of the ones discarded.
 
@@ -46,21 +51,34 @@ Common options:
                            sliced, etc.)
     -d, --delimiter <arg>  The field delimiter for reading CSV data.
                            Must be a single character. (default: ,)
-";
+"#;
 
-type ByteString = Vec<u8>;
+use std::{collections::hash_map::Entry, fs, io, str};
+
+use ahash::AHashMap;
+use byteorder::{BigEndian, WriteBytesExt};
+use serde::Deserialize;
+
+use crate::{
+    config::{Config, Delimiter},
+    index::Indexed,
+    select::{SelectColumns, Selection},
+    util,
+    util::ByteString,
+    CliResult,
+};
 
 #[derive(Deserialize)]
 struct Args {
-    arg_columns1: SelectColumns,
-    arg_input1: String,
-    arg_columns2: SelectColumns,
-    arg_input2: String,
-    flag_v: bool,
-    flag_output: Option<String>,
-    flag_no_headers: bool,
-    flag_no_case: bool,
-    flag_delimiter: Option<Delimiter>,
+    arg_columns1:     SelectColumns,
+    arg_input1:       String,
+    arg_columns2:     SelectColumns,
+    arg_input2:       String,
+    flag_v:           bool,
+    flag_output:      Option<String>,
+    flag_no_headers:  bool,
+    flag_ignore_case: bool,
+    flag_delimiter:   Option<Delimiter>,
 }
 
 pub fn run(argv: &[&str]) -> CliResult<()> {
@@ -71,13 +89,13 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
 }
 
 struct IoState<R, W: io::Write> {
-    wtr: csv::Writer<W>,
-    rdr1: csv::Reader<R>,
-    sel1: Selection,
-    rdr2: csv::Reader<R>,
-    sel2: Selection,
+    wtr:        csv::Writer<W>,
+    rdr1:       csv::Reader<R>,
+    sel1:       Selection,
+    rdr2:       csv::Reader<R>,
+    sel2:       Selection,
     no_headers: bool,
-    casei: bool,
+    casei:      bool,
 }
 
 impl<R: io::Read + io::Seek, W: io::Write> IoState<R, W> {
@@ -90,26 +108,20 @@ impl<R: io::Read + io::Seek, W: io::Write> IoState<R, W> {
     }
 
     fn exclude(mut self, invert: bool) -> CliResult<()> {
-        let _scratch = csv::ByteRecord::new();
+        // amortize allocations
+        #[allow(unused_assignments)]
+        let mut curr_row = csv::ByteRecord::new();
+
         let validx = ValueIndex::new(self.rdr2, &self.sel2, self.casei)?;
         for row in self.rdr1.byte_records() {
-            let row = row?;
-            let key = get_row_key(&self.sel1, &row, self.casei);
-            match validx.values.get(&key) {
-                None => {
-                    if !invert {
-                        self.wtr.write_record(row.iter())?;
-                    } else {
-                        continue;
-                    }
+            curr_row = row?;
+            let key = get_row_key(&self.sel1, &curr_row, self.casei);
+            if let Some(_rows) = validx.values.get(&key) {
+                if invert {
+                    self.wtr.write_record(curr_row.iter())?;
                 }
-                Some(_rows) => {
-                    if invert {
-                        self.wtr.write_record(row.iter())?;
-                    } else {
-                        continue;
-                    }
-                }
+            } else if !invert {
+                self.wtr.write_record(curr_row.iter())?;
             }
         }
         Ok(())
@@ -118,11 +130,11 @@ impl<R: io::Read + io::Seek, W: io::Write> IoState<R, W> {
 
 impl Args {
     fn new_io_state(&self) -> CliResult<IoState<fs::File, Box<dyn io::Write + 'static>>> {
-        let rconf1 = Config::new(&Some(self.arg_input1.clone()))
+        let rconf1 = Config::new(Some(self.arg_input1.clone()).as_ref())
             .delimiter(self.flag_delimiter)
             .no_headers(self.flag_no_headers)
             .select(self.arg_columns1.clone());
-        let rconf2 = Config::new(&Some(self.arg_input2.clone()))
+        let rconf2 = Config::new(Some(self.arg_input2.clone()).as_ref())
             .delimiter(self.flag_delimiter)
             .no_headers(self.flag_no_headers)
             .select(self.arg_columns2.clone());
@@ -131,16 +143,17 @@ impl Args {
         let mut rdr2 = rconf2.reader_file()?;
         let (sel1, sel2) = self.get_selections(&rconf1, &mut rdr1, &rconf2, &mut rdr2)?;
         Ok(IoState {
-            wtr: Config::new(&self.flag_output).writer()?,
+            wtr: Config::new(self.flag_output.as_ref()).writer()?,
             rdr1,
             sel1,
             rdr2,
             sel2,
             no_headers: rconf1.no_headers,
-            casei: self.flag_no_case,
+            casei: self.flag_ignore_case,
         })
     }
 
+    #[allow(clippy::unused_self)]
     fn get_selections<R: io::Read>(
         &self,
         rconf1: &Config,
@@ -150,15 +163,15 @@ impl Args {
     ) -> CliResult<(Selection, Selection)> {
         let headers1 = rdr1.byte_headers()?;
         let headers2 = rdr2.byte_headers()?;
-        let select1 = rconf1.selection(&*headers1)?;
-        let select2 = rconf2.selection(&*headers2)?;
+        let select1 = rconf1.selection(headers1)?;
+        let select2 = rconf2.selection(headers2)?;
         if select1.len() != select2.len() {
-            return fail!(format!(
-                "Column selections must have the same number of columns, \
-                 but found column selections with {} and {} columns.",
+            return fail_incorrectusage_clierror!(
+                "Column selections must have the same number of columns, but found column \
+                 selections with {} and {} columns.",
                 select1.len(),
                 select2.len()
-            ));
+            );
         }
         Ok((select1, select2))
     }
@@ -167,8 +180,8 @@ impl Args {
 #[allow(dead_code)]
 struct ValueIndex<R> {
     // This maps tuples of values to corresponding rows.
-    values: AHashMap<Vec<ByteString>, Vec<usize>>,
-    idx: Indexed<R, io::Cursor<Vec<u8>>>,
+    values:   AHashMap<Vec<ByteString>, Vec<usize>>,
+    idx:      Indexed<R, io::Cursor<Vec<u8>>>,
     num_rows: usize,
 }
 
@@ -176,23 +189,23 @@ impl<R: io::Read + io::Seek> ValueIndex<R> {
     fn new(mut rdr: csv::Reader<R>, sel: &Selection, casei: bool) -> CliResult<ValueIndex<R>> {
         let mut val_idx = AHashMap::with_capacity(10000);
         let mut row_idx = io::Cursor::new(Vec::with_capacity(8 * 10000));
-        let (mut rowi, mut count) = (0usize, 0usize);
+        let (mut rowi, mut count) = (0_usize, 0_usize);
 
         // This logic is kind of tricky. Basically, we want to include
         // the header row in the line index (because that's what csv::index
         // does), but we don't want to include header values in the ValueIndex.
-        if !rdr.has_headers() {
-            // ... so if there are no headers, we seek to the beginning and
-            // index everything.
-            let mut pos = csv::Position::new();
-            pos.set_byte(0);
-            rdr.seek(pos)?;
-        } else {
-            // ... and if there are headers, we make sure that we've parsed
+        if rdr.has_headers() {
+            // ... so if there are headers, we make sure that we've parsed
             // them, and write the offset of the header row to the index.
             rdr.byte_headers()?;
             row_idx.write_u64::<BigEndian>(0)?;
             count += 1;
+        } else {
+            // ... and if there are no headers, we seek to the beginning and
+            // index everything.
+            let mut pos = csv::Position::new();
+            pos.set_byte(0);
+            rdr.seek(pos)?;
         }
 
         let mut row = csv::ByteRecord::new();
@@ -202,18 +215,19 @@ impl<R: io::Read + io::Seek> ValueIndex<R> {
             // indexes in one pass.
             row_idx.write_u64::<BigEndian>(row.position().unwrap().byte())?;
 
-            let fields: Vec<_> = sel.select(&row).map(|v| transform(v, casei)).collect();
-            if !fields.iter().any(std::vec::Vec::is_empty) {
-                match val_idx.entry(fields) {
-                    Entry::Vacant(v) => {
-                        let mut rows = Vec::with_capacity(4);
-                        rows.push(rowi);
-                        v.insert(rows);
-                    }
-                    Entry::Occupied(mut v) => {
-                        v.get_mut().push(rowi);
-                    }
-                }
+            let fields: Vec<_> = sel
+                .select(&row)
+                .map(|v| util::transform(v, casei))
+                .collect();
+            match val_idx.entry(fields) {
+                Entry::Vacant(v) => {
+                    let mut rows = Vec::with_capacity(4);
+                    rows.push(rowi);
+                    v.insert(rows);
+                },
+                Entry::Occupied(mut v) => {
+                    v.get_mut().push(rowi);
+                },
             }
             rowi += 1;
             count += 1;
@@ -229,6 +243,8 @@ impl<R: io::Read + io::Seek> ValueIndex<R> {
     }
 }
 
+use std::fmt;
+
 impl<R> fmt::Debug for ValueIndex<R> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // Sort the values by order of first appearance.
@@ -240,7 +256,7 @@ impl<R> fmt::Debug for ValueIndex<R> {
                 .iter()
                 .map(|k| String::from_utf8(k.clone()).unwrap())
                 .collect::<Vec<_>>();
-            writeln!(f, "({}) => {:?}", keys.join(", "), rows)?;
+            writeln!(f, "({}) => {rows:?}", keys.join(", "))?;
         }
         Ok(())
     }
@@ -248,20 +264,5 @@ impl<R> fmt::Debug for ValueIndex<R> {
 
 #[inline]
 fn get_row_key(sel: &Selection, row: &csv::ByteRecord, casei: bool) -> Vec<ByteString> {
-    sel.select(row).map(|v| transform(v, casei)).collect()
-}
-
-#[inline]
-fn transform(bs: &[u8], casei: bool) -> ByteString {
-    let s = unsafe { str::from_utf8_unchecked(bs) };
-    if casei {
-        let norm: String = s
-            .trim()
-            .chars()
-            .map(|c| c.to_lowercase().next().unwrap())
-            .collect();
-        norm.into_bytes()
-    } else {
-        s.trim().as_bytes().to_vec()
-    }
+    sel.select(row).map(|v| util::transform(v, casei)).collect()
 }

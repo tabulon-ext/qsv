@@ -1,0 +1,29 @@
+name: macOS - Polars
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-macos-polars-tests-${{ github.ref }}-1
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: self-hosted
+    # runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v4        
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Run tests
+      env:
+        RUSTFLAGS: -C target-cpu=native
+      run: cargo test --verbose --locked --features=polars,feature_capable

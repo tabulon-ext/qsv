@@ -1,15 +1,18 @@
 ### A whirlwind tour
 
-Let's say you're playing with some of the data from the
+> ℹ️ **NOTE:** This tour is primarily targeted to Linux and macOS users. Though qsv works on Windows, the tour assumes basic knowledge of command-line piping and redirection, and uses other command-line tools (curl, tee, head, etc.) that are not installed by default on Windows.  
+For a more detailed, interactive tour (which also happens to be Windows-friendly)
+see [100.dathere.com](https://100.dathere.com).
+
+Let's say you're playing with some data from the
 [Data Science Toolkit](https://github.com/petewarden/dstkdata), which contains
 several CSV files. Maybe you're interested in the population counts of each
 city in the world. So grab the 124MB, 2.7M row CSV file and start examining it:
 
 ```
 # there are no headers in the original repo, so let's download a prepared CSV with headers
-$ curl -LO https://raw.githubusercontent.com/wiki/jqnatividad/qsv/files/wcp.zip
+$ curl -LO https://raw.githubusercontent.com/wiki/dathere/qsv/files/wcp.zip
 $ unzip wcp.zip
-# on Windows Powershell, do `Expand-Archive wcp.zip`
 $ qsv headers wcp.csv
 1   Country
 2   City
@@ -25,37 +28,42 @@ appears in each column. The `stats` command will do this for you:
 
 ```
 $ qsv stats wcp.csv | qsv table
-field       type     sum                min           max          min_length  max_length  mean                stddev              variance
-Country     String                      ad            zw           2           2
-
-City        String                       al lusayli   ??ykkvibaer  1           87
-
-AccentCity  String                       Al Lusayli   ??zl??ce     1           87
-
-Region      String                      00            Z4           0           2
-
-Population  Integer  2290536128         3             31480498     0           8           48729.62723114559   308410.84307353816  95117248125.33058
-Latitude    Float    76585211.1977638   -54.9333333   82.483333    1           12          28.371681223642454  21.938373536961045  481.2922334472327
-Longitude   Float    75976506.66428815  -179.9833333  180.0        1           14          28.14618114715136   62.47285862586659   3902.8580648875136
+field       type     sum                min           max          min_length  max_length  mean                stddev              variance           nullcount
+Country     String                      ad            zw           2           2                                                                      0
+City        String                       al lusayli   ??ykkvibaer  1           87                                                                     0
+AccentCity  String                       Al Lusayli   ??zl??ce     1           87                                                                     0
+Region      String                      00            Z4           0           2                                                                      4
+Population  Integer  2290536128         3             31480498     0           8           48729.62723114559   308410.84307353816  95117248125.33058  2652349
+Latitude    Float    76585211.1977638   -54.9333333   82.483333    1           12          28.371681223642454  21.938373536961045  481.2922334472327  0
+Longitude   Float    75976506.66428813  -179.9833333  180.0        1           14          28.14618114715136   62.472858625866586  3902.858064887513  0
 ```
 
-Wow! That was fast! It took just 1.3 seconds to compile all that[^1]. But can we get more descriptive statistics? What's the variance, the modes, the distribution, the cardinality and the nullcount?  No problem. That's why `qsv stats` has the `--everything` option to compute more "expensive" stats that require loading the entire CSV into memory.
+Wow! That was fast! It took just 1.3 seconds to compile all that.[^1] One reason for qsv's speed
+is that ***it mainly works in "streaming" mode*** - computing statistics as it "streams"
+the CSV file line by line. This also means it can gather statistics on arbitrarily large files,
+as it does not have to load the entire file into memory.[^2]
+
+But can we get more summary statistics? What's the variance, the modes, the distribution (quartiles), 
+and the cardinality of the data?  No problem. That's why `qsv stats` has an `--everything` option to 
+compute these more "expensive" stats. Expensive - as these extended statistics can only be computed at 
+the cost of loading the entire file into memory.
+
+```
+$ qsv stats wcp.csv --everything | qsv table
+field       type     sum                min           max          min_length  max_length  mean                stddev              variance           nullcount  lower_outer_fence    lower_inner_fence   q1          q2_median   q3          iqr                upper_inner_fence   upper_outer_fence   skewness              mode         cardinality
+Country     String                      ad            zw           2           2                                                                      0                                                                                                                                                                        ru           231
+City        String                       al lusayli   ??ykkvibaer  1           87                                                                     0                                                                                                                                                                        san jose     2008182
+AccentCity  String                       Al Lusayli   ??zl??ce     1           87                                                                     0                                                                                                                                                                        San Antonio  2031214
+Region      String                      00            Z4           0           2                                                                      4                                                                                                                                                                        04           392
+Population  Integer  2290536128         3             31480498     0           8           48729.627231145605  308410.84307353816  95117248125.33058  2652349    -69768.5             -33019.25           3730.0      10879.0     28229.5     24499.5            64978.75            101728.0            0.4163962529847548                 28461
+Latitude    Float    76585211.1977638   -54.9333333   82.483333    1           12          28.37168122364246   21.938373536961045  481.2922334472327  0          -84.7705556          -35.9076389         12.9552778  33.8666667  45.5305556  32.5752778         94.3934723          143.256389          -0.28388092518431285  50.8         255133
+Longitude   Float    75976506.66428813  -179.9833333  180.0        1           14          28.146181147151353  62.472858625866586  3902.858064887513  0          -199.36666790000004  -98.49166745000002  2.383333    26.8802778  69.6333333  67.25000030000001  170.50833375000002  271.38333420000004  0.2714663289005219    23.1         407568
+
+```
 
 > ℹ️ **NOTE:** The `qsv table` command takes any CSV data and formats it into aligned columns
 using [elastic tabstops](https://github.com/BurntSushi/tabwriter). You'll
 notice that it even gets alignment right with respect to Unicode characters.
-
-```
-$ qsv stats wcp.csv --everything | qsv table
-field       type     sum                min           max         min_length  max_length  mean                stddev              variance            lower_fence         q1          q2_median   q3          iqr                upper_fence         skew                  mode         cardinality  nullcount
-Country     String                      ad            zw          2           2                                                                                                                                                                                            ru           231          0
-City        String                       al lusayli   Þykkvibaer  1           87                                                                                                                                                                                           san jose     2008182      0
-AccentCity  String                       Al Lusayli   özlüce      1           87                                                                                                                                                                                           San Antonio  2031214      0
-Region      String                      00            Z4          0           2                                                                       -29.5               5           11          28          23                 62.5                1.3036035769599401    04           392          4
-Population  Integer  2290536125         7             31480498    0           8           48730.66387966977   308414.0418510231   95119221210.88461   -33018              3730.5      10879       28229.5     24499              64978               0.36819008290764255                28460        2652350
-Latitude    Float    76585211.19776328  -54.9333333   82.483333   1           12          28.371681223643343  21.938373536960917  481.292233447227    -35.9076389         12.9552778  33.8666667  45.5305556  32.5752778         94.3934723          -0.7514210842155992   50.8         255133       0
-Longitude   Float    75976506.66429423  -179.9833333  180         1           14          28.14618114715278   62.472858625866486  3902.8580648875004  -98.49166745000002  2.383333    26.8802778  69.6333333  67.25000030000001  170.50833375000002  0.060789759344963286  23.1         407568       0
-```
 
 So, this command took 3.22 seconds to run on my machine, but we can speed
 it up by creating an index and re-running the command:
@@ -65,25 +73,25 @@ qsv index wcp.csv
 qsv stats wcp.csv --everything | qsv table
 ```
 
-Which cuts it down to 1.95 seconds on my machine. (And creating the index
-took 0.27 seconds. And the original `stats` without `--everything`? Just 0.16 seconds with an index!)
+Which cuts it down to 1.95 seconds - 1.65x faster! (And creating the 21.6mb index took 0.27 seconds. 
+What about the first `stats` without `--everything`? From 1.3 seconds to 0.16 seconds with an index - 8.25x faster!)
 
 Notably, the same type of "statistics" command in another
 [CSV command line toolkit](https://csvkit.readthedocs.io/)
-takes about 10 seconds to produce similar statistics on the same data set. [Visidata](https://visidata.org)
-takes ~1.5 minutes to calculate a subset of these statistics with its Describe sheet. Even python [pandas'](https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.describe.html) 
-`describe(include="all"))` took 12 seconds to calculate a subset of qsv's statistics.[^2]
+takes about 10 seconds to produce a *subset* of statistics on the same data set. [Visidata](https://visidata.org)
+takes much longer - ~1.5 minutes to calculate a *subset* of these statistics with its Describe sheet. 
+Even python [pandas'](https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.describe.html) 
+`describe(include="all"))` took 12 seconds to calculate a *subset* of qsv's "streaming" statistics.[^3]
 
-Creating an index gives us more than just faster statistics gathering. It 
-enables multithreading on several other commands - `frequency`, `split` & `schema`.
-It also accelerates the `count`, `join`, `sample` and `slice` commands.
+This is another reason for qsv's speed. Creating an index accelerated statistics gathering as it enables 
+***multithreading & fast I/O***.
 
-> ℹ️ **NOTE:** Creating/updating an index itself is extremely fast as well. If you want
-qsv to automatically create and update indices, set the environment var
-`QSV_AUTOINDEX`.
+**For multithreading** - running `stats` with an index was 8.25x faster because it divided the file into 
+16 equal chunks[^1] with ~170k records each, then running stats on each chunk in parallel across 16 
+logical processors and merging the results in the end. It was "only" 8x, and not 16x faster as there is 
+some overhead involved in multithreading. 
 
-The slice operations extremely fast with an index because *only the sliced portion* 
-has to be parsed. For example, let's say you wanted to grab the last 10 records:
+**For fast I/O** - let's say you wanted to grab the last 10 records:
 
 ```
 $ qsv count --human-readable wcp.csv
@@ -102,9 +110,17 @@ zw       zuzumba            Zuzumba            06                  -20.0333333  
 zw       zvishavane         Zvishavane         07      79876       -20.3333333  30.0333333
 ```
 
-These commands are *instantaneous* because they run in time and memory
-proportional to the size of the slice (which means they will scale to
-arbitrarily large CSV data).
+`qsv count` took 0.006 seconds and `qsv slice`, 0.017 seconds! These commands are *instantaneous* 
+with an index because for `count` - the index already precomputed the record count, and with `slice`,
+*only the sliced portion* has to be parsed - because an index allowed us to jump directly to that 
+part of the file. It didn't have to scan the entire file to get the last 10 records. For comparison,
+without an index, it took 0.25 (41x slower) and 0.66 (39x slower) seconds respectively.
+
+> ℹ️ **NOTE:** Creating/updating an index itself is extremely fast as well. If you want
+qsv to automatically create and update indices, set the environment var `QSV_AUTOINDEX`.
+
+Okay, okay! Let's switch gears and stop obsessing over how fast :rocket: qsv is... let's go back to exploring :mag_right:
+the data set.
 
 Hmmmm... the Population column has a lot of null values. How pervasive is that?
 First, let's take a look at 10 "random" rows with `sample`. We use the `--seed` parameter
@@ -128,7 +144,7 @@ bg       Nadezhda
 ru       Rabog                 
 ```
 
-Whoops! The sample we got don't have population counts. It's quite pervasive.
+Whoops! The sample we got doesn't have population counts. It's quite pervasive.
 Exactly how many cities have empty (NULL) population counts?
 
 ```
@@ -199,7 +215,7 @@ $ qsv headers country_continent.csv
 1 # https://datahub.io/JohnSnowLabs/country-and-continent-codes-list
 ```
 
-Huh!?! That's not what we we were expecting. But if you look at the `country-continent.csv`
+Huh!?! That's not what we were expecting. But if you look at the `country-continent.csv`
 file, it starts with a comment with the `#` character. 
 
 ```
@@ -217,8 +233,6 @@ part of the CSV, that **starts with the character** we set it to.
 
 ```
 $ export QSV_COMMENT_CHAR='#'
-# on Windows Powershell
-$ $env:QSV_COMMENT_CHAR='#'
 
 $ qsv headers country_continent.csv
 1   continent
@@ -232,7 +246,7 @@ $ qsv headers country_continent.csv
 That's more like it. We can now do a join to see which countries and continents these are:
 
 ```
-$ qsv join --no-case Country sample.csv iso2 country_continent.csv  | qsv table
+$ qsv join --ignore-case Country sample.csv iso2 country_continent.csv  | qsv table
 Country  AccentCity         Population  continent      code  country                                             iso2  iso3  number
 it       Isernia            21409       Europe         EU    Italy, Italian Republic                             IT    ITA   380
 lt       Ramygala           1637        Europe         EU    Lithuania, Republic of                              LT    LTU   440
@@ -261,7 +275,7 @@ No worries. Let's use the `select` (so we only get the columns we need, in the o
 `dedup` (so we only get unique County/City combinations) and `rename` (columns in titlecase) commands: 
 
 ```
-$ qsv join --no-case Country sample.csv iso2 country_continent.csv |
+$ qsv join --ignore-case Country sample.csv iso2 country_continent.csv |
     qsv select 'AccentCity,Population,country,continent' |
     qsv dedup --select 'country,AccentCity' |
     qsv rename City,Population,Country,Continent |
@@ -290,7 +304,7 @@ Indeed we can — because `qsv` is designed for speed - written in [Rust](https:
 performance-focused [mimalloc](https://github.com/microsoft/mimalloc) allocator.
 
 ```
-$ qsv join --no-case Country wcp.csv iso2 country_continent.csv |
+$ qsv join --ignore-case Country wcp.csv iso2 country_continent.csv |
     qsv search --select Population '[0-9]' |
     qsv select 'AccentCity,Population,country,continent,Latitude,Longitude' |
     qsv dedup --select 'country,AccentCity,Latitude,Longitude' --dupes-output wcp_dupes.csv |
@@ -371,4 +385,5 @@ Perhaps we can get population info elsewhere with the `fetch` command...
 But that's another tour by itself! 😄
 
 [^1]: Timings collected by setting `QSV_LOG_LEVEL='debug'` on a Ryzen 4800H laptop (8 physical/16 logical cores) running Windows 11 with 32gb of memory and a 1 TB SSD.
-[^2]: [Why is qsv exponentially faster than python pandas?](https://github.com/dathere/datapusher-plus/discussions/15)
+[^2]: For example, running `qsv stats` on a CSV export of ALL of NYC's available 311 data from 2010 to Mar 2022 (27.8M rows, 16gb) took just 22.4 seconds with an index (which actually took longer to create - 39 seconds to create a 223mb index), and its memory footprint remained the same, pinning all 16 logical processors near 100% utilization on my Ryzen 7 4800H laptop with 32gb memory and 1 TB SSD.
+[^3]: [Why is qsv exponentially faster than python pandas?](https://github.com/dathere/datapusher-plus/discussions/15)

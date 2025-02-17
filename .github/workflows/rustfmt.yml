@@ -1,0 +1,35 @@
+name: Rustfmt
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        components: rustfmt, clippy
+    - name: make doubly sure right rustfmt is installed
+      run: |
+        rustup default nightly
+        rustup component add rustfmt
+        rustup update
+    - name: Check formatting
+      uses: actions-rs/cargo@v1
+      with:
+        command: fmt
+        toolchain: nightly
+        use-cross: false
+        args: -- --check

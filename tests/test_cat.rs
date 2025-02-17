@@ -1,8 +1,9 @@
+#![cfg(not(feature = "datapusher_plus"))]
 use std::process;
 
-use crate::quickcheck::TestResult;
-use crate::workdir::Workdir;
-use crate::{qcheck, Csv, CsvData};
+use serial_test::serial;
+
+use crate::{qcheck, quickcheck::TestResult, workdir::Workdir, Csv, CsvData};
 
 fn no_headers(cmd: &mut process::Command) {
     cmd.arg("--no-headers");
@@ -24,11 +25,17 @@ where
     wrk.create("in2.csv", rows2);
 
     let mut cmd = wrk.command("cat");
-    modify_cmd(cmd.arg(which).arg("in1.csv").arg("in2.csv"));
+    modify_cmd(
+        cmd.env("QSV_SKIP_FORMAT_CHECK", "1")
+            .arg(which)
+            .arg("in1.csv")
+            .arg("in2.csv"),
+    );
     wrk.read_stdout(&mut cmd)
 }
 
 #[test]
+#[serial]
 fn prop_cat_rows() {
     fn p(rows: CsvData) -> bool {
         let expected = rows.clone();
@@ -71,6 +78,671 @@ fn cat_rows_headers() {
 }
 
 #[test]
+fn cat_rowskey() {
+    let wrk = Workdir::new("cat_rowskey");
+    wrk.create(
+        "in1.csv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+    );
+
+    wrk.create(
+        "in2.csv",
+        vec![
+            svec!["c", "a", "b"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+    );
+
+    wrk.create(
+        "in3.csv",
+        vec![
+            svec!["a", "b", "d", "c"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+    );
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rowskey")
+        .arg("in1.csv")
+        .arg("in2.csv")
+        .arg("in3.csv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["a", "b", "c", "d"],
+        svec!["1", "2", "3", ""],
+        svec!["2", "3", "4", ""],
+        svec!["1", "2", "3", ""],
+        svec!["2", "3", "4", ""],
+        svec!["1", "2", "3", "4"],
+        svec!["2", "3", "4", "5"],
+        svec!["z", "y", "x", "w"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn cat_rowskey_ssv_tsv() {
+    let wrk = Workdir::new("cat_rowskey_ssv_tsv");
+    wrk.create_with_delim(
+        "in1.tsv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+        b'\t',
+    );
+
+    wrk.create(
+        "in2.csv",
+        vec![
+            svec!["c", "a", "b"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+    );
+
+    wrk.create_with_delim(
+        "in3.ssv",
+        vec![
+            svec!["a", "b", "d", "c"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+        b';',
+    );
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rowskey")
+        .arg("in1.tsv")
+        .arg("in2.csv")
+        .arg("in3.ssv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["a", "b", "c", "d"],
+        svec!["1", "2", "3", ""],
+        svec!["2", "3", "4", ""],
+        svec!["1", "2", "3", ""],
+        svec!["2", "3", "4", ""],
+        svec!["1", "2", "3", "4"],
+        svec!["2", "3", "4", "5"],
+        svec!["z", "y", "x", "w"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn cat_rows_flexible() {
+    let wrk = Workdir::new("cat_rows_flexible");
+    wrk.create(
+        "in1.csv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+    );
+
+    wrk.create(
+        "in2.csv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+    );
+
+    wrk.create(
+        "in3.csv",
+        vec![
+            svec!["a", "b", "c", "d"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+    );
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rows")
+        .arg("--flexible")
+        .arg("in1.csv")
+        .arg("in2.csv")
+        .arg("in3.csv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["a", "b", "c"],
+        svec!["1", "2", "3"],
+        svec!["2", "3", "4"],
+        svec!["3", "1", "2"],
+        svec!["4", "2", "3"],
+        svec!["1", "2", "4", "3"],
+        svec!["2", "3", "5", "4"],
+        svec!["z", "y", "w", "x"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn cat_rows_flexible_infile() {
+    let wrk = Workdir::new("cat_rows_flexible_infile");
+    wrk.create(
+        "in1.csv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+    );
+
+    wrk.create(
+        "in2.csv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+    );
+
+    wrk.create(
+        "in3.csv",
+        vec![
+            svec!["a", "b", "c", "d"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+    );
+
+    wrk.create_from_string("testdata.infile-list", "in1.csv\nin2.csv\nin3.csv\n");
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rows")
+        .arg("--flexible")
+        .arg("testdata.infile-list");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["a", "b", "c"],
+        svec!["1", "2", "3"],
+        svec!["2", "3", "4"],
+        svec!["3", "1", "2"],
+        svec!["4", "2", "3"],
+        svec!["1", "2", "4", "3"],
+        svec!["2", "3", "5", "4"],
+        svec!["z", "y", "w", "x"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn cat_rowskey_grouping() {
+    let wrk = Workdir::new("cat_rowskey_grouping");
+    wrk.create(
+        "in1.csv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+    );
+
+    wrk.create(
+        "in2.csv",
+        vec![
+            svec!["c", "a", "b"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+    );
+
+    wrk.create(
+        "in3.csv",
+        vec![
+            svec!["a", "b", "d", "c"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+    );
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rowskey")
+        .args(["--group", "fstem"])
+        .arg("in1.csv")
+        .arg("in2.csv")
+        .arg("in3.csv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["file", "a", "b", "c", "d"],
+        svec!["in1", "1", "2", "3", ""],
+        svec!["in1", "2", "3", "4", ""],
+        svec!["in2", "1", "2", "3", ""],
+        svec!["in2", "2", "3", "4", ""],
+        svec!["in3", "1", "2", "3", "4"],
+        svec!["in3", "2", "3", "4", "5"],
+        svec!["in3", "z", "y", "x", "w"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn cat_rowskey_grouping_noheader() {
+    let wrk = Workdir::new("cat_rowskey_grouping_noheader");
+    wrk.create(
+        "in1.csv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+    );
+
+    wrk.create(
+        "in2.csv",
+        vec![
+            svec!["c", "a", "b"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+    );
+
+    wrk.create(
+        "in3.csv",
+        vec![
+            svec!["a", "b", "d", "c"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+    );
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rowskey")
+        .args(["--group", "fstem"])
+        .arg("--no-headers")
+        .arg("in1.csv")
+        .arg("in2.csv")
+        .arg("in3.csv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["in1", "a", "b", "c", ""],
+        svec!["in1", "1", "2", "3", ""],
+        svec!["in1", "2", "3", "4", ""],
+        svec!["in2", "c", "a", "b", ""],
+        svec!["in2", "3", "1", "2", ""],
+        svec!["in2", "4", "2", "3", ""],
+        svec!["in3", "a", "b", "d", "c"],
+        svec!["in3", "1", "2", "4", "3"],
+        svec!["in3", "2", "3", "5", "4"],
+        svec!["in3", "z", "y", "w", "x"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn cat_rowskey_grouping_parentdirfname() {
+    let wrk = Workdir::new("cat_rowskey_grouping_parentdirfname");
+    wrk.create(
+        "in1.csv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+    );
+
+    wrk.create_with_delim(
+        "in2.tsv",
+        vec![
+            svec!["c", "a", "b"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+        b'\t',
+    );
+
+    // create a subdirectory and put in3.csv in it
+    let _ = wrk.create_subdir("testdir");
+
+    wrk.create(
+        "testdir/in3.csv",
+        vec![
+            svec!["a", "b", "d", "c"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+    );
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rowskey")
+        .args(["--group", "parentdirfname"])
+        .arg("in1.csv")
+        .arg("in2.tsv")
+        .arg("testdir/in3.csv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    // on Windows, the directory separator is backslash, which is an escape character in CSV
+    // strings. So we get double backslashes in the output.
+    #[cfg(windows)]
+    let expected = vec![
+        svec!["file", "a", "b", "c", "d"],
+        svec!["in1.csv", "1", "2", "3", ""],
+        svec!["in1.csv", "2", "3", "4", ""],
+        svec!["in2.tsv", "1", "2", "3", ""],
+        svec!["in2.tsv", "2", "3", "4", ""],
+        svec!["testdir\\in3.csv", "1", "2", "3", "4"],
+        svec!["testdir\\in3.csv", "2", "3", "4", "5"],
+        svec!["testdir\\in3.csv", "z", "y", "x", "w"],
+    ];
+    #[cfg(not(windows))]
+    let expected = vec![
+        svec!["file", "a", "b", "c", "d"],
+        svec!["in1.csv", "1", "2", "3", ""],
+        svec!["in1.csv", "2", "3", "4", ""],
+        svec!["in2.tsv", "1", "2", "3", ""],
+        svec!["in2.tsv", "2", "3", "4", ""],
+        svec!["testdir/in3.csv", "1", "2", "3", "4"],
+        svec!["testdir/in3.csv", "2", "3", "4", "5"],
+        svec!["testdir/in3.csv", "z", "y", "x", "w"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn cat_rowskey_grouping_parentdirfstem() {
+    let wrk = Workdir::new("cat_rowskey_grouping_parentdirfstem");
+    wrk.create(
+        "in1.csv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+    );
+
+    wrk.create(
+        "in2.csv",
+        vec![
+            svec!["c", "a", "b"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+    );
+
+    // create a subdirectory and put in3.csv in it
+    let _ = wrk.create_subdir("testdir");
+
+    wrk.create(
+        "testdir/in3.csv",
+        vec![
+            svec!["a", "b", "d", "c"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+    );
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rowskey")
+        .args(["--group", "parentdirfstem"])
+        .arg("in1.csv")
+        .arg("in2.csv")
+        .arg("testdir/in3.csv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    // on Windows, the directory separator is backslash, which is an escape character in CSV
+    // strings. So we get double backslashes in the output.
+    #[cfg(windows)]
+    let expected = vec![
+        svec!["file", "a", "b", "c", "d"],
+        svec!["in1", "1", "2", "3", ""],
+        svec!["in1", "2", "3", "4", ""],
+        svec!["in2", "1", "2", "3", ""],
+        svec!["in2", "2", "3", "4", ""],
+        svec!["testdir\\in3", "1", "2", "3", "4"],
+        svec!["testdir\\in3", "2", "3", "4", "5"],
+        svec!["testdir\\in3", "z", "y", "x", "w"],
+    ];
+    #[cfg(not(windows))]
+    let expected = vec![
+        svec!["file", "a", "b", "c", "d"],
+        svec!["in1", "1", "2", "3", ""],
+        svec!["in1", "2", "3", "4", ""],
+        svec!["in2", "1", "2", "3", ""],
+        svec!["in2", "2", "3", "4", ""],
+        svec!["testdir/in3", "1", "2", "3", "4"],
+        svec!["testdir/in3", "2", "3", "4", "5"],
+        svec!["testdir/in3", "z", "y", "x", "w"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn cat_rowskey_grouping_infile() {
+    let wrk = Workdir::new("cat_rowskey_grouping_infile");
+    wrk.create(
+        "in1.csv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+    );
+
+    wrk.create(
+        "in2.csv",
+        vec![
+            svec!["c", "a", "b"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+    );
+
+    wrk.create(
+        "in3.csv",
+        vec![
+            svec!["a", "b", "d", "c"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+    );
+
+    wrk.create_from_string("testdata.infile-list", "in1.csv\nin2.csv\nin3.csv\n");
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rowskey")
+        .args(["-g", "FStem"])
+        .arg("testdata.infile-list");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["file", "a", "b", "c", "d"],
+        svec!["in1", "1", "2", "3", ""],
+        svec!["in1", "2", "3", "4", ""],
+        svec!["in2", "1", "2", "3", ""],
+        svec!["in2", "2", "3", "4", ""],
+        svec!["in3", "1", "2", "3", "4"],
+        svec!["in3", "2", "3", "4", "5"],
+        svec!["in3", "z", "y", "x", "w"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn cat_rowskey_grouping_customname() {
+    let wrk = Workdir::new("cat_rowskey_grouping_customname");
+    wrk.create(
+        "in1.csv",
+        vec![
+            svec!["a", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+    );
+
+    wrk.create(
+        "in2.csv",
+        vec![
+            svec!["c", "a", "b"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+    );
+
+    wrk.create(
+        "in3.csv",
+        vec![
+            svec!["a", "b", "d", "c"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+    );
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rowskey")
+        .args(["--group", "fstem"])
+        .args(&["--group-name", "file group label"])
+        .arg("in1.csv")
+        .arg("in2.csv")
+        .arg("in3.csv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["file group label", "a", "b", "c", "d"],
+        svec!["in1", "1", "2", "3", ""],
+        svec!["in1", "2", "3", "4", ""],
+        svec!["in2", "1", "2", "3", ""],
+        svec!["in2", "2", "3", "4", ""],
+        svec!["in3", "1", "2", "3", "4"],
+        svec!["in3", "2", "3", "4", "5"],
+        svec!["in3", "z", "y", "x", "w"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn cat_rowskey_insertion_order() {
+    let wrk = Workdir::new("cat_rowskey_insertion_order");
+    wrk.create(
+        "in1.csv",
+        vec![
+            svec!["j", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+    );
+
+    wrk.create(
+        "in2.csv",
+        vec![
+            svec!["c", "j", "b"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+    );
+
+    wrk.create(
+        "in3.csv",
+        vec![
+            svec!["j", "b", "d", "c"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+    );
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rowskey")
+        .arg("in1.csv")
+        .arg("in2.csv")
+        .arg("in3.csv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["j", "b", "c", "d"],
+        svec!["1", "2", "3", ""],
+        svec!["2", "3", "4", ""],
+        svec!["1", "2", "3", ""],
+        svec!["2", "3", "4", ""],
+        svec!["1", "2", "3", "4"],
+        svec!["2", "3", "4", "5"],
+        svec!["z", "y", "x", "w"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn cat_rowskey_insertion_order_noheader() {
+    let wrk = Workdir::new("cat_rowskey_insertion_order_noheader");
+    wrk.create(
+        "in1.csv",
+        vec![
+            svec!["j", "b", "c"],
+            svec!["1", "2", "3"],
+            svec!["2", "3", "4"],
+        ],
+    );
+
+    wrk.create(
+        "in2.csv",
+        vec![
+            svec!["c", "j", "b"],
+            svec!["3", "1", "2"],
+            svec!["4", "2", "3"],
+        ],
+    );
+
+    wrk.create(
+        "in3.csv",
+        vec![
+            svec!["j", "b", "d", "c"],
+            svec!["1", "2", "4", "3"],
+            svec!["2", "3", "5", "4"],
+            svec!["z", "y", "w", "x"],
+        ],
+    );
+
+    let mut cmd = wrk.command("cat");
+    cmd.arg("rowskey")
+        .arg("--no-headers")
+        .arg("in1.csv")
+        .arg("in2.csv")
+        .arg("in3.csv");
+
+    let got: Vec<Vec<String>> = wrk.read_stdout(&mut cmd);
+    let expected = vec![
+        svec!["j", "b", "c", ""],
+        svec!["1", "2", "3", ""],
+        svec!["2", "3", "4", ""],
+        svec!["c", "j", "b", ""],
+        svec!["3", "1", "2", ""],
+        svec!["4", "2", "3", ""],
+        svec!["j", "b", "d", "c"],
+        svec!["1", "2", "4", "3"],
+        svec!["2", "3", "5", "4"],
+        svec!["z", "y", "w", "x"],
+    ];
+    assert_eq!(got, expected);
+}
+
+#[test]
+#[serial]
 fn prop_cat_cols() {
     fn p(rows1: CsvData, rows2: CsvData) -> TestResult {
         let got: Vec<Vec<String>> = run_cat(

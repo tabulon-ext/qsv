@@ -1,18 +1,19 @@
-use std::cmp::Ordering;
-use std::collections::HashSet;
-use std::fmt;
-use std::iter::{self, repeat};
-use std::ops;
-use std::slice;
-use std::str::FromStr;
+use std::{
+    cmp::Ordering,
+    fmt,
+    iter::{self, repeat_n},
+    ops, slice,
+    str::FromStr,
+};
 
+use ahash::AHashSet;
 use regex::bytes::Regex;
 use serde::de::{Deserialize, Deserializer, Error};
 
 #[derive(Clone)]
 pub struct SelectColumns {
     selectors: Vec<Selector>,
-    invert: bool,
+    invert:    bool,
 }
 
 impl SelectColumns {
@@ -48,10 +49,10 @@ impl SelectColumns {
         let mut map = vec![];
         for sel in &self.selectors {
             let idxs = sel.indices(first_record, use_names);
-            map.extend(idxs?.into_iter());
+            map.extend(idxs?);
         }
         if self.invert {
-            let set: HashSet<_> = map.into_iter().collect();
+            let set: AHashSet<_> = map.into_iter().collect();
             let mut map = vec![];
             for i in 0..first_record.len() {
                 if !set.contains(&i) {
@@ -61,6 +62,11 @@ impl SelectColumns {
             return Ok(Selection(map));
         }
         Ok(Selection(map))
+    }
+
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.selectors.is_empty()
     }
 }
 
@@ -82,35 +88,31 @@ impl fmt::Debug for SelectColumns {
 impl<'de> Deserialize<'de> for SelectColumns {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<SelectColumns, D::Error> {
         let raw = String::deserialize(d)?;
-        SelectColumns::parse(&raw).map_err(|e| D::Error::custom(&e))
+        SelectColumns::parse(&raw).map_err(D::Error::custom)
     }
 }
 
 struct SelectorParser {
     chars: Vec<char>,
-    pos: usize,
+    pos:   usize,
 }
 
 impl SelectorParser {
     fn new(s: &str) -> SelectorParser {
         SelectorParser {
             chars: s.chars().collect(),
-            pos: 0,
+            pos:   0,
         }
     }
 
     fn parse(&mut self) -> Result<Vec<Selector>, String> {
         if (self.chars.first(), self.chars.last()) == (Some(&'/'), Some(&'/')) {
             if self.chars.len() == 2 {
-                return Err(format!(
-                    "Empty regex: {}",
-                    self.chars.iter().collect::<String>()
-                ));
+                return fail_format!("Empty regex: {}", self.chars.iter().collect::<String>());
             }
             let re: String = self.chars[1..(self.chars.len() - 1)].iter().collect();
-            let regex = match Regex::new(&re) {
-                Ok(r) => r,
-                Err(_) => return Err(format!("Invalid regex: {re}")),
+            let Ok(regex) = Regex::new(&re) else {
+                return fail_format!("Invalid regex: {re}");
             };
             return Ok(vec![Selector::Regex(regex)]);
         }
@@ -136,10 +138,10 @@ impl SelectorParser {
                 None
             };
             if !self.is_end_of_selector() {
-                return Err(format!(
+                return fail_format!(
                     "Expected end of field but got '{}' instead.",
                     self.cur().unwrap()
-                ));
+                );
             }
             sels.push(match f2 {
                 Some(end) => Selector::Range(f1, end),
@@ -155,7 +157,11 @@ impl SelectorParser {
             self.bump();
             self.parse_quoted_name()?
         } else {
-            self.parse_name()?
+            if self.cur() == Some('_') {
+                self.bump();
+                return Ok(OneSelector::End);
+            }
+            self.parse_name()
         };
         Ok(if self.cur() == Some('[') {
             let idx = self.parse_index()?;
@@ -168,7 +174,7 @@ impl SelectorParser {
         })
     }
 
-    fn parse_name(&mut self) -> Result<String, String> {
+    fn parse_name(&mut self) -> String {
         let mut name = String::new();
         loop {
             if self.is_end_of_field() || self.cur() == Some('[') {
@@ -177,7 +183,7 @@ impl SelectorParser {
             name.push(self.cur().unwrap());
             self.bump();
         }
-        Ok(name)
+        name
     }
 
     fn parse_quoted_name(&mut self) -> Result<String, String> {
@@ -185,8 +191,8 @@ impl SelectorParser {
         loop {
             match self.cur() {
                 None => {
-                    return Err("Unclosed quote, missing closing \".".to_owned());
-                }
+                    return fail!("Unclosed quote, missing closing \".");
+                },
                 Some('"') => {
                     self.bump();
                     if self.cur() == Some('"') {
@@ -196,11 +202,11 @@ impl SelectorParser {
                         continue;
                     }
                     break;
-                }
+                },
                 Some(c) => {
                     name.push(c);
                     self.bump();
-                }
+                },
             }
         }
         Ok(name)
@@ -214,16 +220,16 @@ impl SelectorParser {
         loop {
             match self.cur() {
                 None => {
-                    return Err("Unclosed index bracket, missing closing ].".to_owned());
-                }
+                    return fail!("Unclosed index bracket, missing closing ].");
+                },
                 Some(']') => {
                     self.bump();
                     break;
-                }
+                },
                 Some(c) => {
                     idx.push(c);
                     self.bump();
-                }
+                },
             }
         }
         FromStr::from_str(&idx)
@@ -235,11 +241,11 @@ impl SelectorParser {
     }
 
     fn is_end_of_field(&self) -> bool {
-        self.cur().map_or(true, |c| c == ',' || c == '-')
+        self.cur().is_none_or(|c| c == ',' || c == '-')
     }
 
     fn is_end_of_selector(&self) -> bool {
-        self.cur().map_or(true, |c| c == ',')
+        self.cur().is_none_or(|c| c == ',')
     }
 
     fn bump(&mut self) {
@@ -286,9 +292,9 @@ impl Selector {
                             inds.push(i);
                         }
                         inds
-                    }
+                    },
                 })
-            }
+            },
             Selector::Regex(ref re) => {
                 let inds: Vec<usize> = first_record
                     .iter()
@@ -297,13 +303,12 @@ impl Selector {
                     .map(|(i, _)| i)
                     .collect();
                 if inds.is_empty() {
-                    return Err(format!(
-                        "Selector regex '{re}' does not match \
-                                        any columns in the CSV header."
-                    ));
+                    return fail_format!(
+                        "Selector regex '{re}' does not match any columns in the CSV header."
+                    );
                 }
                 Ok(inds)
-            }
+            },
         }
     }
 }
@@ -319,26 +324,23 @@ impl OneSelector {
             }),
             OneSelector::Index(i) => {
                 if first_record.is_empty() {
-                    return Err("Input is empty.".to_string());
+                    return fail!("Input is empty.");
                 }
                 if i < 1 || i > first_record.len() {
-                    Err(format!(
-                        "Selector index {i} is out of \
-                                 bounds. Index must be >= 1 \
-                                 and <= {}.",
+                    fail_format!(
+                        "Selector index {i} is out of bounds. Index must be >= 1 and <= {}.",
                         first_record.len()
-                    ))
+                    )
                 } else {
                     // Indices given by user are 1-offset. Convert them here!
                     Ok(i - 1)
                 }
-            }
+            },
             OneSelector::IndexedName(ref s, sidx) => {
                 if !use_names {
-                    return Err(format!(
-                        "Cannot use names ('{s}') in selection \
-                                        with --no-headers set."
-                    ));
+                    return fail_format!(
+                        "Cannot use names ('{s}') in selection with --no-headers set."
+                    );
                 }
                 let mut num_found = 0;
                 for (i, field) in first_record.iter().enumerate() {
@@ -350,19 +352,18 @@ impl OneSelector {
                     }
                 }
                 if num_found == 0 {
-                    Err(format!(
-                        "Selector name '{s}' does not exist \
-                                 as a named header in the given CSV \
-                                 data."
-                    ))
+                    fail_format!(
+                        "Selector name '{s}' does not exist as a named header in the given CSV \
+                         data."
+                    )
                 } else {
-                    Err(format!(
-                        "Selector index '{sidx}' for name '{s}' is \
-                                 out of bounds. Must be >= 0 and <= {}.",
+                    fail_format!(
+                        "Selector index '{sidx}' for name '{s}' is out of bounds. Must be >= 0 \
+                         and <= {}.",
                         num_found - 1
-                    ))
+                    )
                 }
-            }
+            },
         }
     }
 }
@@ -394,11 +395,15 @@ pub struct Selection(Vec<usize>);
 pub type _GetField = for<'c> fn(&mut &'c csv::ByteRecord, &usize) -> Option<&'c [u8]>;
 
 impl Selection {
+    #[inline]
     pub fn select<'a, 'b>(
         &'a self,
         row: &'b csv::ByteRecord,
     ) -> iter::Scan<slice::Iter<'a, usize>, &'b csv::ByteRecord, _GetField> {
         // This is horrifying.
+        #[allow(clippy::unnecessary_wraps)]
+        #[allow(clippy::trivially_copy_pass_by_ref)]
+        #[allow(clippy::needless_pass_by_ref_mut)]
         fn get_field<'c>(row: &mut &'c csv::ByteRecord, idx: &usize) -> Option<&'c [u8]> {
             Some(&row[*idx])
         }
@@ -407,7 +412,7 @@ impl Selection {
     }
 
     pub fn normal(&self) -> NormalSelection {
-        let &Selection(ref inds) = self;
+        let Selection(inds) = self;
         if inds.is_empty() {
             return NormalSelection(vec![]);
         }
@@ -415,7 +420,7 @@ impl Selection {
         let mut normal = inds.clone();
         normal.sort_unstable();
         normal.dedup();
-        let mut set: Vec<_> = repeat(false).take(normal[normal.len() - 1] + 1).collect();
+        let mut set: Vec<_> = repeat_n(false, normal[normal.len() - 1] + 1).collect();
         for i in normal {
             set[i] = true;
         }
@@ -451,9 +456,12 @@ impl NormalSelection {
     where
         I: Iterator<Item = T>,
     {
-        fn filmap<T>(v: Option<T>) -> Option<T> {
+        const fn filmap<T>(v: Option<T>) -> Option<T> {
             v
         }
+        #[allow(clippy::option_option)]
+        #[allow(clippy::unnecessary_wraps)]
+        #[allow(clippy::needless_pass_by_ref_mut)]
         fn get_field<T>(set: &mut &[bool], t: (usize, T)) -> Option<Option<T>> {
             let (i, v) = t;
             if i < set.len() && set[i] {

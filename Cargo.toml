@@ -1,28 +1,37 @@
 [package]
 name          = "qsv"
-version       = "0.50.1"                                                  #:version
+version       = "3.0.0"                                                                    #:version
 authors       = ["Joel Natividad <joel@datHere.com>"]
-description   = "A high performance CSV data-wrangling toolkit."
-documentation = "https://github.com/jqnatividad/qsv"
-homepage      = "https://github.com/jqnatividad/qsv"
-repository    = "https://github.com/jqnatividad/qsv"
+description   = "A Blazing-Fast Data-wrangling toolkit."
+documentation = "https://github.com/dathere/qsv#qsv-ultra-fast-csv-data-wrangling-toolkit"
+homepage      = "https://qsv.dathere.com"
+repository    = "https://github.com/dathere/qsv"
 readme        = "README.md"
 keywords      = ["csv", "geocode", "data-engineering", "etl", "opendata"]
 categories    = ["command-line-utilities", "parser-implementations"]
 license       = "MIT OR Unlicense"
 autotests     = false
 edition       = "2021"
-rust-version  = "1.61.0"
+rust-version  = "1.84.1"
+resolver      = "2"
 autobins      = false
-include       = ["src/**/*", "LICENSE-MIT", "README.md", "CHANGELOG.md"]
+
+include = [
+    "src/**/*",
+    "LICENSE-MIT",
+    "UNLICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "resources/luau/vendor/luadate/date.lua",
+]
 
 [[bin]]
-name    = "qsv"
-test    = true
-bench   = false
-doctest = false
-path    = "src/main.rs"
-required-features = ["full"]
+name              = "qsv"
+test              = true
+bench             = false
+doctest           = false
+path              = "src/main.rs"
+required-features = ["feature_capable"]
 
 [[bin]]
 name              = "qsvlite"
@@ -51,149 +60,381 @@ lto           = true
 opt-level     = 3
 strip         = true
 
+[profile.release-samply]
+inherits = "release"
+debug    = true
+strip    = false
+
 [profile.release-nightly]
 inherits = "release"
-panic = "abort"
-
-[profile.test]
-opt-level = 3
+panic    = "abort"
 
 [dependencies]
-ahash = "0.7"
-anyhow = "1.0"
-byteorder = "1.4"
-cached = { version = "0.34", default-features = false, features = [
-    "proc_macro",
-    "redis_store",
+ahash = "0.8"
+arboard = { version = "3.4.1", default-features = false, optional = true }
+atoi_simd = "0.16"
+base62 = { version = "2.2", optional = true }
+bytemuck = { version = "1.21", features = [
+    "latest_stable_rust",
 ], optional = true }
-calamine = "0.18"
-censor = { version = "0.2", optional = true }
-chrono = { version = "0.4", optional = true }
+byteorder = "1.5"
+bytes = "1"
+cached = { version = "0.54", features = [
+    "ahash",
+    "disk_store",
+    "redis_ahash",
+], optional = true }
+calamine = { version = "0.26", features = ["dates"] }
+censor = { version = "0.3", optional = true }
+chrono = { version = "0.4", default-features = false }
+chrono-tz = "0.10"
+console = { version = "0.15", optional = true }
+cpc = { version = "1.9", optional = true }
+crc32fast = { version = "1.4", optional = true }
 crossbeam-channel = "0.5"
-csv = "1.1"
+csv = "1.3"
 csv-core = "0.1"
+csv-diff = "0.1"
 csv-index = "0.1"
-docopt = "1"
-dynfmt = { version = "0.1", default-features = false, features = [
-    "curly",
+csvlens = { version = "0.11", optional = true, default-features = false, features = [
+    "clipboard",
+] }
+csvs_convert = { version = "0.9.0", default-features = false, features = [
+    "converters",
 ], optional = true }
+data-encoding = { version = "2.8", optional = true }
+dotenvy = "0.15"
+dynfmt2 = { version = "0.2", default-features = false, features = ["curly"] }
 eudex = { version = "0.1", optional = true }
-ext-sort = { version = "0.1", features = ["memory-limit"] }
+ext-sort = { version = "0.1", default-features = false }
+fast-float2 = "0.2"
+flate2 = { version = "1", optional = true }
+file-format = { version = "0.26", features = ["reader"] }
 filetime = "0.2"
-flexi_logger = { version = "0.22", features = [
+flexi_logger = { version = "0.29", features = [
+    "async",
     "compress",
+    "dont_minimize_extra_stacks",
 ], default-features = false }
-governor = { version = "0.4", optional = true }
-grex = { version = "1.3.0", default-features = false }
-indicatif = "0.16"
-itertools = "0.10"
+futures = "0.3"
+futures-util = "0.3"
+gender_guesser = { version = "0.2", optional = true }
+geosuggest-core = { version = "0.6", optional = true }
+geosuggest-utils = { version = "0.6", optional = true }
+governor = { version = "0.8", optional = true }
+grex = { version = "1.4", default-features = false }
+gzp = { version = "0.11", default-features = false, features = [
+    "snappy_default",
+] }
+hashbrown = { version = "0.15", optional = true }
+human-panic = "2"
+indexmap = "2.7"
+indicatif = "0.17"
+itertools = "0.14"
 itoa = "1"
-jsonschema = { version = "0.16", features = [
+jaq-core = "2"
+jaq-json = { version = "1", features = ["serde_json"] }
+jaq-std = "2"
+jemallocator = { version = "0.5", optional = true }
+json-objects-to-csv = "0.1.3"
+jsonschema = { version = "0.29", features = [
     "resolve-file",
     "resolve-http",
 ], default-features = false }
-jsonxf = { version = "1", optional = true }
-jql = { version = "4.0", default-features = false, optional = true }
+localzone = { version = "0.3", features = ["auto_validation"] }
 log = "0.4"
+memmap2 = "0.9"
 mimalloc = { version = "0.1", default-features = false, optional = true }
-mlua = { version = "0.7", features = ["lua54", "vendored"], optional = true }
-once_cell = { version = "1.10", optional = true }
-pyo3 = { version = "0.16", features = [
-    "abi3",
-    "abi3-py38",
-    "auto-initialize",
-    # Automatically generates `python3.dll` import libraries for Windows targets.
-    "generate-abi3-import-lib",    
+minijinja = { version = "2", features = [
+    "json",
+    "loop_controls",
+    "speedups",
+    "stacker",
+    "urlencode",
+] }
+minijinja-contrib = { version = "2", features = [
+    "datetime",
+    "pycompat",
+    "rand",
+    "timezone",
+    "unicode_wordwrap",
+    "wordcount",
+    "wordwrap",
+] }
+mlua = { version = "0.10", features = [
+    "luau",
+    "luau-jit",
+    "serialize",
 ], optional = true }
-qsv-dateparser = "0.2"
-qsv-stats = "0.3"
-qsv_currency = { version = "0.5", optional = true }
-qsv-sniffer = { version = "0.4", features = ["runtime-dispatch-simd"] }
-rand = "0.8"
-rayon = "1.5"
+num_cpus = "1"
+odht = "0.3"
+phf = { version = "0.11", features = ["macros"]}
+polars = { version = "0.46", features = [
+    "asof_join",
+    "avro",
+    "avx512",
+    "aws",
+    "binary_encoding",
+    "business",
+    # "cloud",
+    "coalesce",
+    "cross_join",
+    "cse",
+    "csv",
+    "decompress",
+    "diagonal_concat",
+    "dtype-categorical",
+    # "dtype-full",
+    "extract_jsonpath",
+    "iejoin",
+    "ipc",
+    "json",
+    "lazy",
+    "object",
+    "parquet",
+    "performant",
+    "pivot",
+    "semi_anti_join",
+    "serde-lazy",
+    "string_normalize",
+    "sql",
+    "streaming",
+    "timezones",
+], optional = true }
+polars-ops = { version = "0.46", optional = true }
+publicsuffix = { version = "2.2", optional = true }
+pyo3 = { version = "0.23", features = ["auto-initialize"], optional = true }
+qsv-dateparser = "0.12"
+qsv_docopt = "1.8"
+qsv-stats = "0.30"
+qsv_currency = "0.7"
+qsv-sniffer = { version = "0.10", default-features = false, features = [
+    "runtime-dispatch-simd",
+] }
+qsv_vader_sentiment_analysis = { version = "0.2", optional = true }
+rand = "0.9"
+rand_hc = "0.4"
+rand_xoshiro = "0.7"
+rayon = "1.10"
+redis = { version = "0.29", features = [
+    "ahash",
+    "tcp_nodelay",
+], default-features = false, optional = true }
 regex = "1"
-reqwest = { version = "0.11", features = [
+reqwest = { version = "0.12", features = [
     "blocking",
     "brotli",
     "cookies",
+    "deflate",
     "gzip",
+    "http2",
+    "json",
     "rustls-tls",
+    "stream",
+    "zstd",
 ], default-features = false }
-reverse_geocoder = { version = "3", optional = true }
+rfd = { version = "0.15", optional = true }
+rust_decimal = { version = "1.36", default-features = false }
 ryu = "1"
-self_update = { version = "0.30", features = [
+sanitize-filename = { version = "0.6", optional = true }
+sha256 = "1.5"
+simd-json = "0.14"
+self_update = { version = "0.42", features = [
     "archive-zip",
     "compression-zip-deflate",
     "rustls",
-], default-features = false }
+    "signatures",
+], default-features = false, optional = true }
+semver = "1"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1.0", features = ["preserve_order"] }
-strsim = { version = "0.10", optional = true }
-sysinfo = "0.23"
-tabwriter = "1.2"
-test-data-generation = { version = "0.3", optional = true }
-thiserror = { version = "1.0", optional = true }
-thousands = "0.2"
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_urlencoded = { version = "0.7", optional = true }
+simple-home-dir = "0.4"
+sled = { version = "0.34", optional = true }
+smallvec = "1"
+snap = "1"
+strsim = { version = "0.11", optional = true }
+strum = { version = "0.27", features = ["phf"] }
+strum_macros = "0.27"
+sysinfo = "0.33"
+tabwriter = "1.4"
+tempfile = "3.17"
+thousands = { version = "0.2", optional = true }
 threadpool = "1.8"
-titlecase = { version = "1", optional = true }
-uuid = { version = "1", features = ["v4"] }
-vader_sentiment = { version = "0.1", optional = true }
+titlecase = { version = "3", optional = true }
+tokio = { version = "1", features = ["parking_lot", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4", "v7"] }
+url = "2.5"
 whatlang = { version = "0.16", optional = true }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+# enable parking_lot hardware lock elision on x86_64
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+parking_lot = { version = "0.12", features = ["hardware-lock-elision"] }
+# otherwise, on non-x86_64, use the default
+[target.'cfg(not(target_arch = "x86_64"))'.dependencies]
+parking_lot = "0.12"
+
+[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
+simdutf8 = "0.1"
+# use SIMD on aarch64 (Apple Silicon, Raspberry Pi 4, etc.)
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+simdutf8 = { version = "0.1", features = ["aarch64_neon"] }
 
 [dev-dependencies]
-actix-governor = "0.3"
-actix-web = { version = "4.0", default-features = false, features = [
+actix-governor = "0.8"
+actix-web = { version = "4.9", default-features = false, features = [
     "compress-brotli",
     "compress-gzip",
 ] }
 assert-json-diff = "2.0"
-newline-converter = "0.2.0"
-quickcheck = { version = "1", default-features = false }
-redis = { version = "0.21", default-features = false }
-serial_test = "0.6"
+newline-converter = "0.3"
+
+# disable these dev dependencies for testing the `to` command
+# as they are expensive and slow down the build/CI tests
+# postgres = "0.19"
+# rusqlite = { version = "0.32", features = ["bundled"] }
+
+quickcheck  = { version = "1", default-features = false }
+serial_test = { version = "3.2", features = ["file_locks"] }
 
 [patch.crates-io]
-calamine = { git = "https://github.com/jqnatividad/calamine", rev = "8023d886519fd4a43b74633da56fc63a2c6387a4" }
-csv = { git = "https://github.com/jqnatividad/rust-csv", branch = "perf-tweaks" }
-csv-core = { git = "https://github.com/jqnatividad/rust-csv", branch = "perf-tweaks" }
-csv-index = { git = "https://github.com/jqnatividad/rust-csv", branch = "perf-tweaks" }
-docopt = { git = "https://github.com/jqnatividad/docopt.rs", branch = "perf-clippy-2021" }
-ext-sort = { git = "https://github.com/jqnatividad/ext-sort-rs", rev = "fd955e2462a65cae0de9c9e5113ea56d2904106a" }
-jsonschema = { git = "https://github.com/Stranger6667/jsonschema-rs", rev = "ead0da16db5a12a6d12cd54bc087d18ed6e62c08"}
-grex = { git = "https://github.com/jqnatividad/grex", rev = "45af84167b8bd6d38c9e36ada7fe677bebe8886f" }
-redis = { git = "https://github.com/mitsuhiko/redis-rs", rev = "b8eb47303c5728e943b914cd10dc35d1fceee05c" }
-reqwest = { git = "https://github.com/seanmonstar/reqwest", rev = "5d8bf830cbce552075d9bd03f09644469533b50e" }
+# use our tweaked fork of csv crate
+# the csv crate underpins a lot of qsv's functionality, so every perf tweak helps
+# the main feature of this csv fork is accelerated UTF-8 validation using the simdutf8 crate
+# non-allocating ByteRecord trim and a non-allocating StringRecord trim_ascii
+csv       = { git = "https://github.com/dathere/rust-csv", branch = "qsv-optimized-non-allocating-byterecord-trim" }
+csv-core  = { git = "https://github.com/dathere/rust-csv", branch = "qsv-optimized-non-allocating-byterecord-trim" }
+csv-index = { git = "https://github.com/dathere/rust-csv", branch = "qsv-optimized-non-allocating-byterecord-trim" }
+
+# use latest upstream with bumped dependencies
+cached = { git = "https://github.com/jaemk/cached", rev = "d0eabce" }
+
+# use latest upstream with upgraded quick-xml and accelerated int/float parsing
+# now that our PR has been merged
+calamine = { git = "https://github.com/tafia/calamine", rev = "5cda5c7" }
+
+# use upstream of csvlens with unreleased fixes
+csvlens = { git = "https://github.com/YS-L/csvlens", rev = "f1efb7a" }
+
+# needed to get latest dependencies and unreleased fixes
+grex = { git = "https://github.com/jqnatividad/grex", branch = "bumped-dependencies-202502" }
+
+# use our patched fork of sled to get rid of unmaintained instant
+sled = { git = "https://github.com/dathere/sled", branch = "v0.34.7-bumped-parking_lot_to_0.12" }
+
+# use textwrap upstream with unreleased fixes and dependencies, used by minijinja-contrib
+textwrap = { git = "https://github.com/mgeisler/textwrap", rev = "0e581b8" }
+
+# Polars has a much higher release tempo for its Python bindings compared
+# to its underlying Rust library. See https://github.com/pola-rs/polars/releases
+# It's qsv's policy to use the latest upstream of polars/py-polars
+# to take advantage of Polars' latest unreleased fixes and features.
+# Based on what's available at the time of qsv's release, we may need to pin polars to a py-polars tag
+# or a specific commit if more revisions have been made since the latest polars/py-polars release.
+# BUILD NOTE: Be sure to set QSV_POLARS_REV below to the latest commit short hash or tag 
+# of polars/py-polars before building qsv. This allows us to show the polars rev/tag in --version.
+# The convention to use for QSV_POLARS_REV is:
+# - if we are using a release version of Rust Polars, leave QSV_POLARS_REV empty
+# - if we are using a release version of Python Polars, use the Python tag
+#   (e.g. py-1.19.0)
+# - if we are using a commit hash, separate the tag and commit hash with a colon, in the order of
+#   - Python Polars tag
+#   - short commit hash
+#     (e.g. py-1.19.0:52ea381 to indicate that we are Python Polars 1.19.0,
+#      and the commit hash 52ea381)
+# ================================
+# QSV_POLARS_REV=py-1.22.0:5e51218
+# polars = { git = "https://github.com/pola-rs/polars", tag = "py-1.22.0" }
+polars = { git = "https://github.com/pola-rs/polars", rev = "5e51218" }
+# polars-ops = { git = "https://github.com/pola-rs/polars", tag = "py-1.22.0" }
+polars-ops = { git = "https://github.com/pola-rs/polars", rev = "5e51218" }
 
 [features]
 default = ["mimalloc"]
+distrib_features = [
+    "feature_capable",
+    "apply",
+    "fetch",
+    "foreach",
+    "geocode",
+    "luau",
+    "polars",
+    "python",
+    "to",
+]
+all_features = ["distrib_features", "self_update", "ui"]
 apply = [
-    "cached",
+    "base62",
     "censor",
-    "chrono",
-    "dynfmt",
+    "cpc",
+    "crc32fast",
+    "data-encoding",
     "eudex",
-    "once_cell",
-    "qsv_currency",
-    "reverse_geocoder",
+    "gender_guesser",
+    "hashbrown",
+    "qsv_vader_sentiment_analysis",
     "strsim",
+    "thousands",
     "titlecase",
-    "vader_sentiment",
     "whatlang",
 ]
+clipboard = ["arboard"]
 fetch = [
     "cached",
-    "dynfmt",
+    "console",
+    "flate2",
     "governor",
-    "jql",
-    "jsonxf",
-    "once_cell",
-    "thiserror",
+    "hashbrown",
+    "publicsuffix",
+    "redis",
+    "serde_urlencoded",
+    "sled",
 ]
 foreach = []
-generate = ["test-data-generation"]
-lua = ["mlua"]
+geocode = [
+    "bytemuck",
+    "cached",
+    "geosuggest-core",
+    "geosuggest-utils",
+    "sled",
+]
+luau = ["mlua", "sanitize-filename"]
+polars = ["dep:polars", "bytemuck", "dep:polars-ops"]
+prompt = ["rfd"]
 python = ["pyo3"]
+to = ["csvs_convert"]
+lens = ["csvlens"]
 lite = []
-datapusher_plus = []
-full = []
-nightly = ["regex/unstable", "rand/nightly", "rand/simd_support", "pyo3/nightly"]
+datapusher_plus = ["self_update"]
+ui = ["clipboard", "prompt", "lens"]
+feature_capable = []
+nightly = [
+    "crc32fast/nightly",
+    "hashbrown/nightly",
+    "polars/nightly",
+    "polars/simd",
+    "pyo3/nightly",
+    "rand/nightly",
+]
+
+[package.metadata.deb]
+maintainer           = "Konstantin Sivakov <konstantin@datHere.com>"
+copyright            = "2024, datHere Inc. <www.dathere.com>"
+extended-description = """A high performance CSV data-wrangling toolkit."""
+depends              = "$auto"
+section              = "utility"
+priority             = "optional"
+
+# Default feature and asset
+features = ["feature_capable"]
+assets   = [["target/release/qsv", "/usr/local/bin/", "755"]]
+
+# Conditional features and assets
+[package.metadata.deb.variants.lite]
+features = ["lite"]
+assets   = [["target/release/qsvlite", "/usr/local/bin/", "755"]]
+
+[package.metadata.deb.variants.datapusher_plus]
+features = ["datapusher_plus", "luau"]
+assets   = [["target/release/qsvdp", "/usr/local/bin/", "755"]]

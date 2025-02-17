@@ -1,14 +1,4 @@
-use std::borrow::Cow;
-use std::convert::From;
-
-use tabwriter::{Alignment, TabWriter};
-
-use crate::config::{Config, Delimiter};
-use crate::util;
-use crate::CliResult;
-use serde::Deserialize;
-
-static USAGE: &str = "
+static USAGE: &str = r#"
 Outputs CSV data as a table with columns in alignment.
 
 This will not work well if the CSV data contains large fields.
@@ -19,6 +9,7 @@ CSV data before formatting it with this command.
 
 Usage:
     qsv table [options] [<input>]
+    qsv table --help
 
 table options:
     -w, --width <arg>      The minimum width of each column.
@@ -26,7 +17,7 @@ table options:
     -p, --pad <arg>        The minimum number of spaces between each column.
                            [default: 2]
     -a, --align <arg>      How entries should be aligned in a column.
-                           Options: \"left\", \"right\", \"center\".
+                           Options: "left", "right", "center".
                            [default: left]
     -c, --condense <arg>   Limits the length of each field to the value
                            specified. If the field is UTF-8 encoded, then
@@ -38,17 +29,30 @@ Common options:
     -o, --output <file>    Write output to <file> instead of stdout.
     -d, --delimiter <arg>  The field delimiter for reading CSV data.
                            Must be a single character. (default: ,)
-";
+    --memcheck             Check if there is enough memory to load the entire
+                           CSV into memory using CONSERVATIVE heuristics.
+"#;
+
+use std::borrow::Cow;
+
+use serde::Deserialize;
+use tabwriter::{Alignment, TabWriter};
+
+use crate::{
+    config::{Config, Delimiter},
+    util, CliResult,
+};
 
 #[derive(Deserialize)]
 struct Args {
-    arg_input: Option<String>,
-    flag_width: usize,
-    flag_pad: usize,
-    flag_output: Option<String>,
+    arg_input:      Option<String>,
+    flag_width:     usize,
+    flag_pad:       usize,
+    flag_output:    Option<String>,
     flag_delimiter: Option<Delimiter>,
-    flag_align: Align,
-    flag_condense: Option<usize>,
+    flag_align:     Align,
+    flag_condense:  Option<usize>,
+    flag_memcheck:  bool,
 }
 
 #[derive(Deserialize, Clone, Copy)]
@@ -70,11 +74,17 @@ impl From<Align> for Alignment {
 
 pub fn run(argv: &[&str]) -> CliResult<()> {
     let args: Args = util::get_args(USAGE, argv)?;
-    let rconfig = Config::new(&args.arg_input)
+    let rconfig = Config::new(args.arg_input.as_ref())
         .delimiter(args.flag_delimiter)
         .no_headers(true)
         .flexible(true);
-    let wconfig = Config::new(&args.flag_output).delimiter(Some(Delimiter(b'\t')));
+
+    // we're loading the entire file into memory, we need to check avail mem
+    if let Some(path) = rconfig.path.clone() {
+        util::mem_file_check(&path, false, args.flag_memcheck)?;
+    }
+
+    let wconfig = Config::new(args.flag_output.as_ref()).delimiter(Some(Delimiter(b'\t')));
 
     let tw = TabWriter::new(wconfig.io_writer()?)
         .minwidth(args.flag_width)
@@ -91,6 +101,5 @@ pub fn run(argv: &[&str]) -> CliResult<()> {
                 .map(|f| util::condense(Cow::Borrowed(f), args.flag_condense)),
         )?;
     }
-    wtr.flush()?;
-    Ok(())
+    Ok(wtr.flush()?)
 }
